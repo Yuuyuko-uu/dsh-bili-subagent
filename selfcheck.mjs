@@ -5,14 +5,26 @@
  *   ① `config` 的值是对象 ⇒ 定时器里 TypeError ⇒ **把整个 dsh 带走**；
  *   ② `parameters.patch` 是 `{ type:'object' }` ⇒ `defineTool` 抛 JsonSchemaError ⇒ **插件整条不激活**。
  *
- * 用法：`node --import ./tools/register.mjs selfcheck.mjs`（解析钩子见 tools/host-resolver.mjs）
+ * 用法：`npm run selfcheck` 或 `node selfcheck.mjs`（不需要自定义 loader）。
+ * index.js 通过 lib/hostdeps.mjs 解析现有依赖；缺少宿主包时使用它自带的降级路径。
+ * 只检查假 ctx / DOM 上的挂载，不调用工具、模型、Python MCP 或 B站 API；不是完整宿主验收。
  * 退出码：0 = 两个半端都正常；1 = 有问题（宿主里就会 "entry did not activate" / 设置页空白）
  */
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const SANDBOX_HOME = join(tmpdir(), 'dsh-bili-scroll-selfcheck')
+const SANDBOX_HOME = mkdtempSync(join(tmpdir(), 'dsh-bili-scroll-selfcheck-'))
+// hostdeps 的 profile 发现也只能看本轮合成目录，不能读用户的 DSH_HOME。
+process.env.DSH_HOME = SANDBOX_HOME
+// exit 事件同样覆盖 fail() 的 process.exit(1) 和未捕获异常。
+process.once('exit', () => {
+  try { rmSync(SANDBOX_HOME, { recursive: true, force: true }) }
+  catch (e) {
+    console.error(`✗ 清理预检临时目录失败：${SANDBOX_HOME}（${e?.message ?? e}）`)
+    process.exitCode = 1
+  }
+})
 const fail = (msg, e) => {
   console.error(`\n✗ ${msg}`)
   if (e) console.error(`  ${e?.name}: ${e?.message}`)
@@ -27,7 +39,7 @@ let mod
 try {
   mod = await import('./index.js')
 } catch (e) {
-  fail('连 import index.js 都失败（依赖没解析？检查 tools/host-resolver.mjs）', e)
+  fail('连 import index.js 都失败（依赖没解析？检查 lib/hostdeps.mjs）', e)
 }
 
 const registered = []
@@ -42,9 +54,6 @@ const fakeCtx = {
   slots: { inject: () => {}, register: () => ({}) },
 }
 
-try { rmSync(SANDBOX_HOME, { recursive: true, force: true }) } catch { /* 清不掉就留着 */ }
-mkdirSync(SANDBOX_HOME, { recursive: true })
-
 try {
   mod.apply(fakeCtx, {})
 } catch (e) {
@@ -55,7 +64,7 @@ for (const n of registered) console.log(`    - ${n}`)
 
 /* ────────────── ② client 半端：假 window.__ModuleLoader__ 上真跑 factory() ────────────── */
 
-const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
 let loaded = null
 const prevWindow = globalThis.window
 globalThis.window = { __ModuleLoader__: { load: (spec) => { loaded = spec } } }
@@ -115,5 +124,4 @@ if (!styleNodes.length) fail('client.js 的 apply 没有把样式挂上（页面
 console.log(`✓ client 半端 OK：id=${loaded.id}  注入=${JSON.stringify(clientMod.inject)}`)
 for (const s of slotsReg) console.log(`    slot ${s.name}  id=${s.id}  order=${s.order}  组件=${s.hasComponent ? '有' : '无 ✗'}`)
 
-try { rmSync(SANDBOX_HOME, { recursive: true, force: true }) } catch { /* 留着也无所谓 */ }
 console.log(`\n（预检不碰真家目录：host 用 ${SANDBOX_HOME}）`)
