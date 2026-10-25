@@ -13,3 +13,10 @@ DSH/Bilibili acceptance.
 The workflow runs Node 22 on Windows x64, Ubuntu x64/ARM64 and macOS Intel/ARM64,
 plus Node 24 on Ubuntu x64. Runner labels follow the
 [GitHub runner table](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
+A separate CI integration step runs `node scripts/verify-uv-release.mjs`. It downloads
+the selected official **0.13.5** release asset and its official SHA-256 sidecar, fails
+closed on missing/mismatching checksums, extracts into a unique temporary directory,
+and executes `uv --version`. This step requires GitHub network access and validates
+the actual runner binary; it does not install Python or qualify DSH/Bilibili behavior.
+The unit tests above remain fully synthetic and offline.
