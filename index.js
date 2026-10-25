@@ -534,6 +534,54 @@ export function apply(ctx, config) {
     try { return JSON.parse(JSON.stringify(v)) } catch { return String(v) }
   }
 
+  /** ⭐ 0.8.5：她自己看过的视频也记一条笔记 —— 卡片墙读的就是这些文件。
+   *  ⭐ 她说的是：「我分享他一个视频、让他自己看，那条也应该在刷过的视频里」。
+   *  同一天同一个 BV 只写一次（幂等），所以不会和刷B站那一轮重复。 */
+  async function 写看过笔记(bvid, 来源, 摘录) {
+    const 号 = String(bvid || '').trim()
+    if (!/^BV[0-9A-Za-z]{10}$/.test(号)) return false
+    if (!cfg.notesOn) return false
+    const 笔记夹 = join(outDir, 'reports')
+    const 路径 = join(笔记夹, 号 + '-' + dayKey(new Date()) + '.md')
+    try { if (existsSync(路径)) return false } catch (e) {}
+    try { mkdirSync(笔记夹, { recursive: true }) } catch (e) {}
+    let 标题 = ''
+    let 封面 = ''
+    try {
+      const vr = await fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + 号)
+      const vj = await vr.json()
+      封面 = String((vj && vj.data && vj.data.pic) || '')
+      标题 = String((vj && vj.data && vj.data.title) || '')
+    } catch (e) {}
+    const 正文 = String(摘录 || '').trim().slice(0, 1500)
+    try {
+      writeFileSync(路径, '# ' + 号 + String.fromCharCode(10, 10)
+        + '> 抓取时间：' + new Date().toISOString() + String.fromCharCode(10)
+        + (标题 ? '> 标题：' + 标题.split(String.fromCharCode(10)).join(' ') + String.fromCharCode(10) : '')
+        + (封面 ? '> 封面：' + 封面 + String.fromCharCode(10) : '') + String.fromCharCode(10)
+        + '### ' + (标题 || ('看过的 ' + 号)) + String.fromCharCode(10)
+        + (正文 ? 正文 + String.fromCharCode(10) : ''), 'utf8')
+      log('记了一条「她看过的视频」：' + 号 + '（' + (来源 || '她自己看的') + '）')
+      return true
+    } catch (e) {
+      return false
+    }
+  }
+
+  /** 从工具返回里尽量抠出可读文字（字符串 / {ok,text} / JSON 串都认） */
+  function 从结果取文字(结果) {
+    try {
+      if (typeof 结果 === 'string') {
+        try {
+          const j = JSON.parse(结果)
+          return String((j && (j.text || j.subtitle || j.内容 || j.content)) || 结果)
+        } catch (e) { return 结果 }
+      }
+      if (结果 && typeof 结果 === 'object') return String(结果.text || 结果.subtitle || 结果.内容 || '')
+    } catch (e) {}
+    return ''
+  }
+
   const tool = (spec) => ctx.tools.register(defineTool({
     ...spec,
     output: textOutput,
@@ -544,6 +592,10 @@ export function apply(ctx, config) {
   // ⭐ 子代理的会话与记录**不由本插件清理**：留着还能回看当时刷了什么，也避免误伤别的会话。
   // ⭐ 这一轮「该发但还没发」的评论：没发评论就不让发私信（模型老跳过评论，只能硬约束）
   let pendingComment = null
+  // ⭐ 0.8.5：现在「她自己看的」也会记一条笔记（卡片墙读的就是这些笔记）。
+  //   但刷B站那一轮里，子代理会为**每条候选**调 bili_subtitle —— 那不能全记（会把墙刷满没挑中的）。
+  //   所以用一个标志：子代理在跑的这一段里，不记「看过的」。
+  let 扫描中 = 0
 
   // ⭐ 2026-10-22「门对门」：从私信转进来的那条，看完**只私信回**，不评论、不 @、不带 BV 号。
   //    从哪条路进来就从哪条路回去 —— 两边都做一遍才是多此一举（主人 2026-10-22 定）。
@@ -589,6 +641,7 @@ export function apply(ctx, config) {
       .split('{n}').join(String(perRound)) + levelLine
 
     let run
+    扫描中 += 1
     try {
       // ⭐ 2026-10-22：原来这里写死 provider 'apii' —— 别人机器上没这个 provider，
       //    自动刷一派子代理就失败。现在**两个都填了才指定**，留空就跟当前会话用一样的。
@@ -606,6 +659,7 @@ export function apply(ctx, config) {
         delivery: 'caller',
       })
     } catch (e) {
+      扫描中 = Math.max(0, 扫描中 - 1)
       return { ok: false, error: '派子代理失败：' + (e?.message ?? e) }
     }
     let result
@@ -613,8 +667,10 @@ export function apply(ctx, config) {
       result = await run.result
     } catch (e) {
       try { await run.dispose() } catch {}
+      扫描中 = Math.max(0, 扫描中 - 1)
       return { ok: false, error: '子代理跑失败：' + (e?.message ?? e) }
     }
+    扫描中 = Math.max(0, 扫描中 - 1)
     const output = (result?.output || []).filter((b) => b && b.type === 'text').map((b) => b.text).join('')
     try { await run.dispose() } catch {}
     if (result?.stopReason !== 'completed') {
@@ -843,7 +899,16 @@ export function apply(ctx, config) {
     name: 'bili_subtitle',
     description: '取一个视频的字幕（AI 字幕）全文。**判断内容就靠它** —— 没有字幕的，直接跳过这条。',
     parameters: { bvid: { type: 'string', description: 'BV号' } },
-    async execute(args) { return call('bili_subtitle', { bvid: String(args.bvid ?? '') }) },
+    async execute(args) {
+      const 号 = String(args?.bvid ?? '').trim()
+      const 结果 = await call('bili_subtitle', { bvid: 号 })
+      // ⭐ 0.8.5：不在刷B站那一轮里 = 这是她自己看的（比如你分享给她、让她亲眼看）
+      //    → 顺手记一条，卡片墙上就有它。
+      try {
+        if (扫描中 === 0) void 写看过笔记(号, '她自己看的（分享/点名让我看）', 从结果取文字(结果).slice(0, 800))
+      } catch (e) {}
+      return 结果
+    },
   })
 
   tool({
@@ -927,7 +992,11 @@ export function apply(ctx, config) {
       if (mode === 'off') return '设置里的「三连模式」是关着的（off）—— 要动就先去设置里选一个'
       const coin = Math.max(1, Math.min(Number(args?.coinNum ?? cfg.tripleCoin ?? 1) || 1, 2))
       log('三连：' + bvid + ' mode=' + mode + ' coin=' + coin)
-      return call('bili_triple', { bvid: bvid, mode: mode, coin_num: coin })
+      const 结果 = await call('bili_triple', { bvid: bvid, mode: mode, coin_num: coin })
+      try {
+        if (扫描中 === 0) void 写看过笔记(bvid, '她点了三连（' + mode + '）', '')
+      } catch (e) {}
+      return 结果
     },
   })
 
