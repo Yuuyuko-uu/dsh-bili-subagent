@@ -1,0 +1,41 @@
+name: Platform runtime
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            node: 22
+          - os: ubuntu-24.04
+            node: 22
+          - os: ubuntu-24.04-arm
+            node: 22
+          - os: macos-15
+            node: 22
+          - os: macos-15-intel
+            node: 22
+          - os: ubuntu-24.04
+            node: 24
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Built-in Node modules only: no install, credentials, uv download or Bili calls.
+      - run: node --test tests/platform-runtime.test.mjs
+      - run: node --check index.js
+      - run: node --check lib/uvfetch.mjs
