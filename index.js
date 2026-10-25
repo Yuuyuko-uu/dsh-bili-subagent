@@ -33,7 +33,7 @@ import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, in
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
 import { createSelfUpdate } from './lib/selfupdate.mjs'
-import { readWatchUnread, deliverWatchBatch, createWatchTick } from './lib/watch.mjs'
+import { readWatchUnread, readAtReplies, deliverWatchBatch, createWatchTick } from './lib/watch.mjs'
 
 export const name = 'bili-scroll'
 export const inject = ['webServer', 'tools', 'settings', 'subagents', 'agents', 'llm']
@@ -1245,21 +1245,8 @@ export function apply(ctx, config) {
   const 收件键 = (it) => String(it.kind || 'x') + ':' + String(it.rpid || it.id || '')
 
   /** 只拉「@ / 回复」那两路（随叫随到也用这一份，别抄第二套） */
-  async function pullAtReplies() {
-    const items = []
-    const 拉一个 = async (toolName) => {
-      try {
-        const raw = await call(toolName, {})
-        const j = typeof raw === 'string' ? JSON.parse(raw) : raw
-        const list = j && Array.isArray(j.items) ? j.items : []
-        for (const it of list) if (it && it.bvid) items.push(it)
-      } catch (e) {
-        log('收件箱：' + toolName + ' 失败 ' + (e?.message ?? e))
-      }
-    }
-    await 拉一个('bili_received_at_and_likes')
-    await 拉一个('bili_received_replies')
-    return items
+  async function pullAtReplies(options = {}) {
+    return readAtReplies(call, { ...options, log })
   }
 
   async function pullInbox() {
@@ -1686,7 +1673,7 @@ export function apply(ctx, config) {
   async function 收提醒(feed) {
     const box = readJson(inboxFile, { seen: {} })
     if (!box.seen || typeof box.seen !== 'object') box.seen = {}
-    for (const it of await pullAtReplies()) {
+    for (const it of await pullAtReplies({ strict: true })) {
       const k = 收件键(it)
       const rec = box.seen[k]
       if (rec && Number(rec.n || 0) >= 1) continue    // 提过就不再提（这条只报一次，不像"没回再提"）

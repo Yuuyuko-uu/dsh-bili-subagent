@@ -1,8 +1,54 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { deliverWatchBatch, readWatchUnread, createWatchTick } from '../lib/watch.mjs'
+import { deliverWatchBatch, readWatchUnread, readAtReplies, createWatchTick } from '../lib/watch.mjs'
 
 const items = (count, kind) => Array.from({ length: count }, (_, i) => ({ id: `${kind}:${i}` }))
+
+for (const tool of ['bili_received_at_and_likes', 'bili_received_replies']) {
+  for (const failure of ['transport', 'api', 'invalid-json']) {
+    test(`strict ${tool} ${failure} failure reaches scheduler backoff without acknowledgement`, async () => {
+      let clock = 1000, runs = 0, acknowledged = 0, errors = 0
+      const tick = createWatchTick({ refresh() {}, enabled: () => true,
+        intervalMs: () => 100, now: () => clock,
+        run: async () => {
+          runs++
+          const mentions = await readAtReplies(async (name) => {
+            if (name !== tool) return { items: [{ bvid: 'BVfixture' }] }
+            if (failure === 'transport') throw Error('offline')
+            return failure === 'api' ? { ok: false, error: 'rate limited' } : '{'
+          }, { strict: true })
+          await deliverWatchBatch({ privateMessages: [], mentions,
+            deliver: async () => true, acknowledge: () => { acknowledged++ },
+          })
+        },
+        onError: () => { errors++ },
+      })
+      await tick()
+      clock += 299
+      await tick()
+      assert.equal(runs, 1)
+      clock++
+      await tick()
+      assert.equal(runs, 2)
+      assert.equal(errors, 2)
+      assert.equal(acknowledged, 0)
+    })
+  }
+}
+
+test('ordinary inbox calls keep best-effort results after either query fails', async () => {
+  for (const failedTool of ['bili_received_at_and_likes', 'bili_received_replies']) {
+    const calls = [], logs = []
+    const result = await readAtReplies(async (name) => {
+      calls.push(name)
+      if (name === failedTool) throw Error('offline')
+      return { items: [{ bvid: 'BVfixture' }, { content: 'no video' }] }
+    }, { log: (line) => logs.push(line) })
+    assert.equal(calls.length, 2)
+    assert.deepEqual(result, [{ bvid: 'BVfixture' }])
+    assert.equal(logs.length, 1)
+  }
+})
 
 test('seven private messages: acknowledge six, then deliver the remaining one', async () => {
   const pending = items(7, 'dm')
