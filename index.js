@@ -32,6 +32,7 @@ import { verifyRecent, appendVerifyToReport } from './lib/verify.mjs'
 import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, inValley, dayKey } from './lib/state.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
+import { restorePythonPath, venvPythonPath } from './lib/platform-runtime.mjs'
 import { createSelfUpdate } from './lib/selfupdate.mjs'
 import { readWatchUnread, readAtReplies, deliverWatchBatch, createWatchTick } from './lib/watch.mjs'
 
@@ -434,11 +435,7 @@ export function apply(ctx, config) {
     for (const k of Object.keys(DEFAULTS)) if (user[k] === undefined) out[k] = saved[k]
     // ⭐ pythonPath 是插件自己管的；DSH 原生设置传来的常是坏值/默认值，config.json 也可能被重置
     //    → 取 config.json；还是默认坏值 'python'（或不存在）时，退回 stateDir 下 venv 的 python
-    out.pythonPath = saved.pythonPath
-    if (!out.pythonPath || out.pythonPath === 'python' || !existsSync(out.pythonPath)) {
-      const venvPy = join(stateDir, '.venv', 'Scripts', 'python.exe')
-      if (existsSync(venvPy)) out.pythonPath = venvPy
-    }
+    out.pythonPath = restorePythonPath(saved.pythonPath, join(stateDir, '.venv'), existsSync)
     // ⭐ 这几段提示词：存着空串也补成默认文案 —— 设置页里要「看得见默认」
     if (!String(out.hintPrompt || '').trim()) out.hintPrompt = HINT_TMPL
     if (!String(out.triggerPrompt || '').trim()) out.triggerPrompt = TRIGGER_TMPL
@@ -1846,9 +1843,7 @@ export function apply(ctx, config) {
     req.on('error', () => finish({}))
   })
 
-  const venvPython = () => process.platform === 'win32'
-    ? join(stateDir, '.venv', 'Scripts', 'python.exe')
-    : join(stateDir, '.venv', 'bin', 'python')
+  const venvPython = () => venvPythonPath(join(stateDir, '.venv'))
 
   /**
    * 建 venv + 装依赖 —— ⭐ **起完就返回，不等它装完**。
@@ -1864,9 +1859,7 @@ export function apply(ctx, config) {
   const installLogFile = join(stateDir, 'install.log')
   const appendInstall = (s) => { try { appendFileSync(installLogFile, s, 'utf8') } catch { /* 写不进去就算了 */ } }
 
-  let uvOk = null
   const haveUv = async () => {
-    if (uvOk) return true
     const ok = await new Promise((resolve) => {
       try {
         const c = spawn('uv', ['--version'], { windowsHide: true, stdio: 'ignore' })
@@ -1874,9 +1867,6 @@ export function apply(ctx, config) {
         c.on('error', () => resolve(false))
       } catch { resolve(false) }
     })
-    // ⭐ 只缓存"有"：把"没有"也缓存住的话，这一轮里刚下好的 uv（或用户刚装上的）会被一直当成没有，
-    //    非重启 dsh 不可 ✗（调用点只有装依赖那两处，多探一次几毫秒）
-    if (ok) uvOk = true
     return ok
   }
 
@@ -1924,9 +1914,7 @@ export function apply(ctx, config) {
 
   /** 找 uv：系统里的 → 插件家里下好的 → 自己下一份（给"两样都没有"的人）；主/转写两套安装共用 */
   const resolveUv = async () => {
-    const bundled = join(stateDir, 'bin', process.platform === 'win32' ? 'uv.exe' : 'uv')
     if (await haveUv()) return 'uv'
-    if (existsSync(bundled)) return bundled
     appendInstall('这台机器上没有 uv —— 我下一份放进插件家目录（单文件、免管理员、约 15MB，只需要一次）…\n')
     const got = await ensureUv({ dir: join(stateDir, 'bin'), log: appendInstall })
     if (got) appendInstall('uv 已就位：' + got + '\n')

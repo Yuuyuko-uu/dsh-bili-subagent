@@ -1,0 +1,43 @@
+name: Platform runtime
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            node: 22
+          - os: ubuntu-24.04
+            node: 22
+          - os: ubuntu-24.04-arm
+            node: 22
+          - os: macos-15
+            node: 22
+          - os: macos-15-intel
+            node: 22
+          - os: ubuntu-24.04
+            node: 24
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      # Unit tests use built-in modules and synthetic runtime dependencies only.
+      - run: node --test tests/platform-runtime.test.mjs
+      - run: node --check index.js
+      - run: node --check lib/uvfetch.mjs
+      - name: Verify official uv binary on the actual runner
+        run: node scripts/verify-uv-release.mjs

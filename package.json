@@ -28,6 +28,9 @@
   ],
   "type": "module",
   "main": "index.js",
+  "scripts": {
+    "test:platform": "node --test tests/platform-runtime.test.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
