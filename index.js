@@ -33,6 +33,7 @@ import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, in
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
 import { createSelfUpdate } from './lib/selfupdate.mjs'
+import { readWatchUnread, readAtReplies, deliverWatchBatch, createWatchTick } from './lib/watch.mjs'
 
 export const name = 'bili-scroll'
 export const inject = ['webServer', 'tools', 'settings', 'subagents', 'agents', 'llm']
@@ -1313,21 +1314,8 @@ export function apply(ctx, config) {
   const 收件键 = (it) => String(it.kind || 'x') + ':' + String(it.rpid || it.id || '')
 
   /** 只拉「@ / 回复」那两路（随叫随到也用这一份，别抄第二套） */
-  async function pullAtReplies() {
-    const items = []
-    const 拉一个 = async (toolName) => {
-      try {
-        const raw = await call(toolName, {})
-        const j = typeof raw === 'string' ? JSON.parse(raw) : raw
-        const list = j && Array.isArray(j.items) ? j.items : []
-        for (const it of list) if (it && it.bvid) items.push(it)
-      } catch (e) {
-        log('收件箱：' + toolName + ' 失败 ' + (e?.message ?? e))
-      }
-    }
-    await 拉一个('bili_received_at_and_likes')
-    await 拉一个('bili_received_replies')
-    return items
+  async function pullAtReplies(options = {}) {
+    return readAtReplies(call, { ...options, log })
   }
 
   async function pullInbox() {
@@ -1713,8 +1701,6 @@ export function apply(ctx, config) {
   //     不能每跳都把私信列表全拉一遍 —— 那既不省流量，也更容易被风控。
   //  ⚠️ 这只是**通知**，不是代回：回不回、怎么回、要不要看视频，都是她自己的事。
   const watchFile = join(stateDir, 'watch.json')
-  let watchBusy = false
-  let watchNextAt = 0
 
   const 提醒间隔毫秒 = () => 钳提醒间隔(cfg.watchInterval) * 1000
   const 现在是谷时 = (now) => inValley(now, WINDOWS.noon) || inWindow(now, WINDOWS.night)
@@ -1725,17 +1711,17 @@ export function apply(ctx, config) {
     if (!box.seen || typeof box.seen !== 'object') box.seen = {}
     const raw = await call('bili_dm_sessions', { size: 10 }, { timeoutMs: 40_000 })
     const j = typeof raw === 'string' ? JSON.parse(raw) : raw
-    if (!j || j.ok === false) { log('提醒：私信会话列表读不到 ' + (j?.error ?? '')); return }
+    if (!j || j.ok === false || j.error) throw new Error('提醒：私信会话列表读不到 ' + (j?.error ?? ''))
     const 有新 = (j.items || []).filter((x) => Number(x.unread) > 0).slice(0, 3)
     for (const s of 有新) {
       let msgs = []
       try {
         const r2 = await call('bili_dm_recent', { size: 10, talker_id: Number(s.talker_uid) }, { timeoutMs: 40_000 })
         const j2 = typeof r2 === 'string' ? JSON.parse(r2) : r2
+        if (!j2 || j2.error || j2.ok === false) throw new Error(j2?.error || '私信内容读不到')
         msgs = (j2 && j2.items) || []
       } catch (e) {
-        log('提醒：读私信内容失败（' + (s.nick || s.talker_uid) + '）' + (e?.message ?? e))
-        continue
+        throw new Error('提醒：读私信内容失败（' + (s.nick || s.talker_uid) + '）' + (e?.message ?? e))
       }
       for (const m of msgs) {
         if (Number(m.from_uid) !== Number(s.talker_uid)) continue     // 只理别人发过来的
@@ -1756,7 +1742,7 @@ export function apply(ctx, config) {
   async function 收提醒(feed) {
     const box = readJson(inboxFile, { seen: {} })
     if (!box.seen || typeof box.seen !== 'object') box.seen = {}
-    for (const it of await pullAtReplies()) {
+    for (const it of await pullAtReplies({ strict: true })) {
       const k = 收件键(it)
       const rec = box.seen[k]
       if (rec && Number(rec.n || 0) >= 1) continue    // 提过就不再提（这条只报一次，不像"没回再提"）
@@ -1780,12 +1766,7 @@ export function apply(ctx, config) {
     if (String(cfg.watchScope || 'valley') === 'valley' && !现在是谷时(now)) return
 
     // ① 先问一句最小的：未读数（B站 一个请求就给全：私信 chat / @ at / 收到的回复 recv_reply）
-    let 数 = null
-    try {
-      const raw = await call('bili_unread_messages', {}, { timeoutMs: 30_000 })
-      数 = typeof raw === 'string' ? JSON.parse(raw) : raw
-    } catch (e) { log('提醒：未读数读不到 ' + (e?.message ?? e)); return }
-    if (!数 || 数.error) { log('提醒：未读数读不到 ' + (数?.error ?? '')); return }
+    const 数 = await readWatchUnread(call)
     const 有私信 = 要私信 && Number(数.chat || 0) > 0
     const 有动静 = 要提醒 && (Number(数.at || 0) > 0 || Number(数.recv_reply || 0) > 0)
     if (!有私信 && !有动静) return          // ⭐ 绝大多数时候走这条：什么都没发生，就一个数字
@@ -1794,70 +1775,53 @@ export function apply(ctx, config) {
     const 私信 = []
     const 提醒 = []
     if (有私信) {
-      try { await 收私信(私信) } catch (e) { log('提醒：私信那一路出错 ' + (e?.message ?? e)) }
+      await 收私信(私信)
     }
     if (有动静) {
-      try { await 收提醒(提醒) } catch (e) { log('提醒：@ 那一路出错 ' + (e?.message ?? e)) }
+      await 收提醒(提醒)
     }
-    const 全 = [...私信, ...提醒].slice(0, 6)
-    if (!全.length) return
-
-    // ③ 递过去（一条消息说完，别连着弹好几下）
-    const 文案 = 拼提醒文案(全)
-
-    const 递 = await 取目标会话('提醒')
-    if (!递) return
-    try {
-      await 递.agent.followup({
-        id: randomUUID(),
-        role: 'user',
-        content: [{ type: 'text', text: 文案 }],
-        source: { kind: 'bili-watch' },
-      })
-    } catch (e) {
-      log('提醒：递不进去 ' + (e?.message ?? e))
-      return
-    }
-
-    // ④ 真递出去了才记账（没递成功下次还会提）
-    try {
-      if (私信.length) {
-        const box = readJson(watchFile, { seen: {} })
-        if (!box.seen || typeof box.seen !== 'object') box.seen = {}
-        for (const x of 私信) box.seen[x.键] = { ts: Date.now() }
-        const 条目 = Object.entries(box.seen)
-        if (条目.length > 500) {
-          const 留 = 条目.sort((a, b) => Number((b[1] && b[1].ts) || 0) - Number((a[1] && a[1].ts) || 0)).slice(0, 500)
-          box.seen = Object.fromEntries(留)
-        }
-        box.lastAt = Date.now()
-        writeJson(watchFile, box)
-      }
-      if (提醒.length) commitInbox(提醒.map((x) => x.原始))
-    } catch (e) { log('提醒：记账失败 ' + (e?.message ?? e)) }
-
-    log('提醒：递过去 ' + 全.length + ' 条（私信 ' + 私信.length + ' / @ 和回复 ' + 提醒.length + '）')
-  }
-
-  const watchTick = () => {
-    try {
-      refreshCfg()
-      if (!cfg.watchOn) return
-      const t = Date.now()
-      if (t < watchNextAt) return
-      watchNextAt = t + 提醒间隔毫秒()          // 先占位：上一跳没跑完也不会叠起来
-      if (watchBusy) return
-      watchBusy = true
-      Promise.resolve(watchOnce())
-        .catch((e) => {
-          watchNextAt = Date.now() + 提醒间隔毫秒() * 3     // 出错就退避，别一直撞
-          log('提醒：这一跳出错（已兜住）' + (e?.stack ?? e))
+    await deliverWatchBatch({
+      privateMessages: 私信,
+      mentions: 提醒,
+      deliver: async (batch) => {
+        const 递 = await 取目标会话('提醒')
+        if (!递) return false
+        await 递.agent.followup({
+          id: randomUUID(),
+          role: 'user',
+          content: [{ type: 'text', text: 拼提醒文案(batch) }],
+          source: { kind: 'bili-watch' },
         })
-        .finally(() => { watchBusy = false })
-    } catch (e) {
-      log('提醒定时器这一跳出错（已兜住）：' + (e?.stack ?? e))
-    }
+        return true
+      },
+      acknowledge: (sentPrivate, sentMentions) => {
+        // 只确认实际递出的批次；超出六条的消息留待下一轮。
+        if (sentPrivate.length) {
+          const box = readJson(watchFile, { seen: {} })
+          if (!box.seen || typeof box.seen !== 'object') box.seen = {}
+          for (const x of sentPrivate) box.seen[x.键] = { ts: Date.now() }
+          const 条目 = Object.entries(box.seen)
+          if (条目.length > 500) {
+            const 留 = 条目.sort((a, b) => Number((b[1] && b[1].ts) || 0) - Number((a[1] && a[1].ts) || 0)).slice(0, 500)
+            box.seen = Object.fromEntries(留)
+          }
+          box.lastAt = Date.now()
+          writeJson(watchFile, box)
+        }
+        if (sentMentions.length) commitInbox(sentMentions.map((x) => x.原始))
+
+        log('提醒：递过去 ' + (sentPrivate.length + sentMentions.length) + ' 条')
+      },
+    })
   }
+
+  const watchTick = createWatchTick({
+    refresh: refreshCfg,
+    enabled: () => cfg.watchOn,
+    intervalMs: 提醒间隔毫秒,
+    run: watchOnce,
+    onError: (e) => log('提醒：这一跳出错（已兜住）' + (e?.stack ?? e)),
+  })
 
   try {
     const wtimer = setInterval(watchTick, 15_000)
