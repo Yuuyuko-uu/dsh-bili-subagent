@@ -288,6 +288,16 @@ dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
 4. 重启后进 **设置 → 刷B站**：先「装主依赖」，再「扫码登录」（确认时选「记住我 / 长期」）。
 5. **不要**替用户开「自动评论并 @ 你」——那是拿用户的号公开说话。要用也得用户自己填「要 @ 谁」。
 
+## 开发者离线预检
+
+Node.js 22+ 下，在仓库里运行 `npm run selfcheck`（或 `node selfcheck.mjs`），回归测试运行 `npm test`。
+不需要 `tools/register.mjs` 或自定义 loader：`index.js` 已通过 `lib/hostdeps.mjs` 解析宿主/本地依赖，
+缺包时使用现有回退路径；无需先安装依赖也能检查这条降级路径。
+
+预检在假 ctx 和假 DOM 上实际加载 host/client 并执行挂载，每次创建独立的临时家目录，成功或失败退出都会清理。
+它不执行已注册工具，不启动 Python MCP、不调用模型或 B站接口。PASS 只表示这套模拟挂载通过；
+不代表缺失宿主包时也验证了真实宿主的 schema、浏览器渲染、登录或社交功能。
+
 ## 依赖与致谢
 
 - 内置 [**bilibili-mcp**](https://github.com/adoresever/bilibili-mcp)（MIT，Copyright (c) 2026 AGI_Ananas）——
