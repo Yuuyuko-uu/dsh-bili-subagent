@@ -54,8 +54,8 @@
 - **子代理的模型可换**：provider + 模型联动下拉，指到免费中转就不花官方额度
 - **提示词全在面板里改**：称呼 + 子代理流程，支持 `{owner}` `{direction}` `{n}` 占位符，改完不用重启
 - **额度口径明确**：`每天最多自动刷几轮`，面板显示「今天已自动刷 X / N 轮」—— **手动跑不占额度**
-- **12 个工具**：`bili_scan`（主入口）`bili_search` `bili_subtitle` `bili_comments` `bili_reply`
-  `bili_send_message` `bili_status` `bili_config` `bili_whoami` `bili_login_start` `bili_login_poll` `bili_setup`
+- **13 个工具**：`bili_scan`（主入口）`bili_search` `bili_subtitle` `bili_comments` `bili_reply`
+  `bili_send_message` `bili_send_dynamic` `bili_status` `bili_config` `bili_whoami` `bili_login_start` `bili_login_poll` `bili_setup`
 - **删掉的**：本地转写（约 1 GB）、headless/overlay、工作区、关注关键词、上游的群答疑与 `tools/` 开发脚本
 - **修掉的**：DSH 原生设置下「改了又弹回去」、`/config` 白名单丢字段、`pythonPath` 落成 `python` 导致二维码画不出
 
@@ -204,7 +204,7 @@ dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
 | **提示词（可改）** | **四段都能自己写，留空都 = 用内置默认**：① **子代理提示词**（派出去的子代理看；`{owner}` `{direction}` `{n}`）；② **投递提示**（报告交回时附给伙伴看，告诉它怎么发评论/私信；`{owner}` `{mention}` `{commentQuota}` `{uid}` `{commentBlock}` `{dmBlock}`）；③ **自动刷触发语**（到点塞进目标会话的那一句；`{owner}`）；④ **评论怎么写**（发公开评论时照它写；`{owner}` `{mention}` `{quota}` `{style}` —— `{style}` 每次从几种口吻里随机挑一种，省得每条都一个调门）。「称呼」改了，四段里的名字一起变 |
 | **一轮挑几条** | 每次最多挑几条（1–10）。和「每天最多自动刷几轮」是两件事 |
 | **挑什么样的** | 两道**硬门槛**：最低播放量、至少发布几天。不达标的视频在**搜索那一步就被滤掉**，子代理根本看不到（0 = 不过滤）；有门槛时会自动多抓几倍再筛，免得筛完一条不剩 |
-| **它会不会替你说话** | 「自动评论并 @ 你」开关 + 每轮几条（0–20）+「要 @ 谁」（留空 = 不发评论）；再往下是**投递方式**：只发评论 / 只私信 / 评论+私信 |
+| **它会不会替你说话** | 「自动评论并 @ 你」开关 + 每轮几条（0–20）+「要 @ 谁」（留空 = 不发评论）；再往下是**投递方式**：只发评论 / 只私信 / 评论+私信。另有「**允许发公开动态**」（`dynamicOn`，默认关）—— 开了才允许 `bili_send_dynamic` 在主页发动态；开了之后下面还有：**每天最多几条**（1–10，默认 3）、**两条之间至少隔几分钟**（1–720，默认 10），以及「**到点自动发**」——到点由插件把一句话派给你选的那个会话，**不绑当前对话**，每天只派一次、错过 3 小时不补，时间（默认 22:00）与会话都能在页面里选 |
 | **日报写多细** | 完整 / 薄 / 不写。薄只留「值不值得 + 链接」 |
 | **有人找我就马上告诉你** | 默认关。开着之后隔一会儿问一句 B站：有人私信你、@ 你、回了你的评论，就立刻把内容递到伙伴手上，不用等下一轮刷。两个子开关（**私信** / **@ 和回复**）、**间隔 60–1800 秒**、**只在谷时 / 全天** |
 | **环境与账号** | 装主依赖、测一下、扫码登录 |
@@ -213,7 +213,7 @@ dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
 > 设置同时落在两处：插件自己的 `config.json` 和 DSH 原生「插件设置」。
 > **以设置页（DSH 原生那层）为准**——那才是真正生效的值。
 
-## 12 个工具
+## 13 个工具
 
 | 工具 | 干什么 |
 |---|---|
@@ -223,11 +223,26 @@ dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
 | `bili_comments` | 取热门评论 |
 | `bili_reply` | 在视频下**发评论**（@ 就是写在正文里的纯文本） |
 | `bili_send_message` | 发**私信** |
+| `bili_send_dynamic` | 在自己主页发**公开动态**（正文 + 最多 9 张图；默认关，开了「允许发公开动态」才能发；每天几条 / 隔几分钟在设置里调） |
 | `bili_status` | 今天跑了没、挑了几条、额度剩多少、下次什么时候开 |
 | `bili_config` | 读 / 改设置（不用开设置页） |
 | `bili_whoami` | 看登录的是谁 |
 | `bili_login_start` / `bili_login_poll` | 扫码登录 |
 | `bili_setup` | 建 venv、装依赖 |
+
+## 命令行扫码登录（不想开设置页时）
+
+设置页出码有个小麻烦：PNG 每次写到同一个文件名，容易被聊天窗口 / 看图器缓存成旧码；而码只有约 180 秒，等你看到消息再拿手机，常常已经过期。
+
+`bin/qr.mjs` 是另做的独立程序，复用同一套登录逻辑：
+
+- 直接**在终端里画码**（`qrcode.print_ascii`），完全不经过图片缓存
+- 同时存一张**文件名唯一**的 PNG，并调系统看图器打开
+- 每 0.8 秒轮询；过期自动换新；扫上并确认后把凭证写进插件家目录
+- 写凭证失败（沙箱下常见 `EPERM`）会明确提示，并把凭证备份到 PNG 同目录
+
+Windows 双击 `bin\二维码登录.cmd` 即可；其他平台 `node bin/qr.mjs`。
+参数与实现细节见 [docs/二维码登录.md](docs/二维码登录.md)。
 
 ## 投递方式：评论 / 私信 / 都要
 
