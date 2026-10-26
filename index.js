@@ -1708,7 +1708,7 @@ export function apply(ctx, config) {
     if (!box.seen || typeof box.seen !== 'object') box.seen = {}
     const raw = await call('bili_dm_sessions', { size: 10 }, { timeoutMs: 40_000 })
     const j = typeof raw === 'string' ? JSON.parse(raw) : raw
-    if (!j || j.ok === false || j.error) throw new Error('提醒：私信会话列表读不到 ' + (j?.error ?? ''))
+    if (!j || j.ok === false || j.error) { log('提醒：私信会话列表读不到 ' + (j?.error ?? '')); return }
     const 有新 = (j.items || []).filter((x) => Number(x.unread) > 0).slice(0, 3)
     for (const s of 有新) {
       let msgs = []
@@ -1718,7 +1718,9 @@ export function apply(ctx, config) {
         if (!j2 || j2.error || j2.ok === false) throw new Error(j2?.error || '私信内容读不到')
         msgs = (j2 && j2.items) || []
       } catch (e) {
-        throw new Error('提醒：读私信内容失败（' + (s.nick || s.talker_uid) + '）' + (e?.message ?? e))
+        // 一个人读不到，别把整条私信路（更别把 @ 那一路）带塌
+        log('提醒：读私信内容失败（' + (s.nick || s.talker_uid) + '）' + (e?.message ?? e))
+        continue
       }
       for (const m of msgs) {
         if (Number(m.from_uid) !== Number(s.talker_uid)) continue     // 只理别人发过来的
@@ -1772,10 +1774,11 @@ export function apply(ctx, config) {
     const 私信 = []
     const 提醒 = []
     if (有私信) {
-      await 收私信(私信)
+      // 两条路各自兜住：一个人读不到，不该让 @ 那一路整跳不跑
+      try { await 收私信(私信) } catch (e) { log('提醒：私信那一路出错 ' + (e?.message ?? e)) }
     }
     if (有动静) {
-      await 收提醒(提醒)
+      try { await 收提醒(提醒) } catch (e) { log('提醒：@ 那一路出错 ' + (e?.message ?? e)) }
     }
     await deliverWatchBatch({
       privateMessages: 私信,
@@ -1915,6 +1918,9 @@ export function apply(ctx, config) {
   /** 找 uv：系统里的 → 插件家里下好的 → 自己下一份（给"两样都没有"的人）；主/转写两套安装共用 */
   const resolveUv = async () => {
     if (await haveUv()) return 'uv'
+    // 家里已经有一份就直接用：别再喊「我先下一份」，也别每次都同步探一遍版本（10 秒超时）
+    const 家里那份 = join(stateDir, 'bin', process.platform === 'win32' ? 'uv.exe' : 'uv')
+    if (existsSync(家里那份)) return 家里那份
     appendInstall('这台机器上没有 uv —— 我下一份放进插件家目录（单文件、免管理员、约 15MB，只需要一次）…\n')
     const got = await ensureUv({ dir: join(stateDir, 'bin'), log: appendInstall })
     if (got) appendInstall('uv 已就位：' + got + '\n')
