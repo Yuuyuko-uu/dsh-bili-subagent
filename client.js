@@ -283,15 +283,23 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
         }
         // 设置页里用**小缩略图**（她说这样看得清楚，也不挤）
         const 块们 = 选.map((c) => {
+          const videoUrl = c.bvid ? 'https://www.bilibili.com/video/' + encodeURIComponent(c.bvid) : ''
           const 图 = c.cover
             ? '<img src="' + API + '/cover?u=' + encodeURIComponent(c.cover) + '" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;flex:0 0 auto">'
             : '<div style="width:96px;height:54px;border-radius:6px;background:rgba(127,127,127,.18);flex:0 0 auto"></div>'
-          return '<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(127,127,127,.15)">'
-            + 图
+          const 内部 = 图
             + '<div style="min-width:0;font-size:12px;line-height:1.5">'
             + ((c.title || '') ? '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + 转义(c.title) + '</div>' : '')
             + '<div style="opacity:.65">' + 转义(c.date || '') + '　' + 转义(c.bvid) + '</div>'
-            + '</div></div>'
+            + '</div>'
+          if (videoUrl) {
+            return '<a href="' + 转义(videoUrl) + '" target="_blank" rel="noopener noreferrer" style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(127,127,127,.15);text-decoration:none;color:inherit;cursor:pointer">'
+              + 内部
+              + '</a>'
+          }
+          return '<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid rgba(127,127,127,.15)">'
+            + 内部
+            + '</div>'
         })
         box.innerHTML = '<div style="font-size:12px;opacity:.65;margin-bottom:4px">共 ' + 选.length + ' 条</div>' + 块们.join('')
       }
@@ -1093,18 +1101,33 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
         if (last && last.d === d) last.list.push(c)
         else 按天.push({ d: d, list: [c] })
       }
-      const 卡 = (c) => h('div', {
-        key: c.file,
-        style: { border: '1px solid rgba(127,127,127,0.25)', borderRadius: '10px', overflow: 'hidden', background: 'rgba(127,127,127,0.06)' },
-      },
-        c.cover ? h('img', {
-          src: API + '/cover?u=' + encodeURIComponent(c.cover),
-          alt: '', loading: 'lazy',
-          style: { width: '100%', aspectRatio: '16 / 9', objectFit: 'cover', display: 'block' },
-        }) : null,
-        h('div', { style: { padding: '8px 10px 10px' } },
-          c.title ? h('div', { style: { fontWeight: 600, margin: '0 0 4px', lineHeight: 1.45 } }, c.title) : null,
-          h('div', { style: { fontSize: '12px', opacity: 0.65 } }, c.bvid)))
+      const 卡 = (c) => {
+        const videoUrl = c.bvid ? 'https://www.bilibili.com/video/' + encodeURIComponent(c.bvid) : undefined
+        return h(videoUrl ? 'a' : 'div', {
+          key: c.file,
+          href: videoUrl,
+          target: videoUrl ? '_blank' : undefined,
+          rel: videoUrl ? 'noopener noreferrer' : undefined,
+          style: {
+            display: 'block',
+            textDecoration: 'none',
+            color: 'inherit',
+            cursor: videoUrl ? 'pointer' : 'default',
+            border: '1px solid rgba(127,127,127,0.25)',
+            borderRadius: '10px',
+            overflow: 'hidden',
+            background: 'rgba(127,127,127,0.06)',
+          },
+        },
+          c.cover ? h('img', {
+            src: API + '/cover?u=' + encodeURIComponent(c.cover),
+            alt: '', loading: 'lazy',
+            style: { width: '100%', aspectRatio: '16 / 9', objectFit: 'cover', display: 'block' },
+          }) : null,
+          h('div', { style: { padding: '8px 10px 10px' } },
+            c.title ? h('div', { style: { fontWeight: 600, margin: '0 0 4px', lineHeight: 1.45 } }, c.title) : null,
+            h('div', { style: { fontSize: '12px', opacity: 0.65 } }, c.bvid)))
+      }
 
       let 内容 = null
       if (list === null) {
