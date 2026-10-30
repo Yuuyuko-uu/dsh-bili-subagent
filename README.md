@@ -111,6 +111,14 @@ github:Yuuyuko-uu/dsh-bili-subagent
 dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
 ```
 
+> ⚠ 上面这行会让包管理器去 **clone 仓库**，机器上没装 `git` 会报 `ERR_PNPM_GIT_FETCH_FAILED`。
+> 没 git 就用下面这条 **tarball 直链**，一样能装，不用 git：
+
+```bash
+dsh plugin --profile desktop add https://codeload.github.com/Yuuyuko-uu/dsh-bili-subagent/tar.gz/refs/heads/main
+```
+
+
 > 本版**暂未发布到 npm**（账号还在等），所以先用 GitHub 地址装。
 > 上架之后就能简写成 `dsh plugin add dsh-bili-subagent`。
 >
