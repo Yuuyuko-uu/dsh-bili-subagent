@@ -104,22 +104,23 @@
 在 DSH 里：**设置 → 插件 → 安装**，填这一行；或者命令行：
 
 ```
-github:Yuuyuko-uu/dsh-bili-subagent
+dsh-bili-subagent
 ```
 
 ```bash
-dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
+dsh plugin --profile desktop add dsh-bili-subagent
 ```
 
-> ⚠ 上面这行会让包管理器去 **clone 仓库**，机器上没装 `git` 会报 `ERR_PNPM_GIT_FETCH_FAILED`。
-> 没 git 就用下面这条 **tarball 直链**，一样能装，不用 git：
+> 也可以在 npm 上直接看到这个包（含历史版本）：<https://www.npmjs.com/package/dsh-bili-subagent>
+
+> 上面那条要是碰到网络问题（npm 抽风、或者想固定某一次的代码快照），可以改用 tarball 直链，不用 git：
 
 ```bash
 dsh plugin --profile desktop add https://codeload.github.com/Yuuyuko-uu/dsh-bili-subagent/tar.gz/refs/heads/main
 ```
 
 
-> 本版**暂未发布到 npm**（账号还在等），所以先用 GitHub 地址装。
+> 也发布到 npm 了：`dsh plugin add dsh-bili-subagent`（不用 git）。
 > 上架之后就能简写成 `dsh plugin add dsh-bili-subagent`。
 >
 > ⭐ 最省事的一条：把仓库链接贴给你自己的 dsh，说「**帮我装这个插件**」。
@@ -172,7 +173,7 @@ $p = "把上面 BOM=True 那一行的路径粘到这里"
 
 ```bash
 dsh plugin --profile desktop remove dsh-bili-subagent
-dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent
+dsh plugin --profile desktop add dsh-bili-subagent
 ```
 
 > ⚠️ **必须先卸再装**：直接装可能拿到缓存里的旧副本，装完还是老的。
@@ -306,7 +307,7 @@ Windows 双击 `bin\二维码登录.cmd` 即可；其他平台 `node bin/qr.mjs`
 ## 如果你是一个 AI 助手，正在帮用户装这个插件
 
 1. 先确认机器上有 `Python 3.10+` 或 `uv`（`python --version` / `uv --version`）；都没有就先装 `uv`。
-2. 装插件：`dsh plugin --profile desktop add github:Yuuyuko-uu/dsh-bili-subagent`。
+2. 装插件：`dsh plugin --profile desktop add dsh-bili-subagent`。
 3. ⚠️ **提醒用户重启一次 dsh**，不重启插件不生效。
 4. 重启后进 **设置 → 刷B站**：先「装主依赖」，再「扫码登录」（确认时选「记住我 / 长期」）。
 5. **不要**替用户开「自动评论并 @ 你」——那是拿用户的号公开说话。要用也得用户自己填「要 @ 谁」。
