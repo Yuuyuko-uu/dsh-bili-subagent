@@ -432,6 +432,11 @@ export function apply(ctx, config) {
   }
 
   const hostCfg = () => normalize(config, { ...DEFAULTS })       // 宿主那份（schema 校验过、默认值已填）
+  // ⭐ savedCfg 会用 DEFAULTS 补齐所有键 —— 所以另留一份「磁盘上真的写过哪些键」。
+  //   不这样的话 `saved[k] !== undefined` 永远成立，等于把原生设置页完全废掉。
+  const savedKeys = () => {
+    try { return new Set(Object.keys(readJson(cfgFile, {}) || {})) } catch { return new Set() }
+  }
   const savedCfg = () => normalize(readJson(cfgFile, {}), { ...DEFAULTS })
   const CFG_SIG = ['perDay', 'mentionName', 'dmMode', 'autoComment']   // 靠这几个键认出"哪一行是我们"
   let settingsRow = { at: 0, row: null }
@@ -486,7 +491,28 @@ export function apply(ctx, config) {
     const user = row.user || {}
     // ⭐ 用 row.value（DSH 原生设置的「生效值」，标量可靠），别用 apply 的 config 参数（字段常是坏值/对象，一丢就回默认）
     const out = normalize(row.value, { ...DEFAULTS })
-    for (const k of Object.keys(DEFAULTS)) if (user[k] === undefined) out[k] = saved[k]
+    // ⚠⚠ 2026-10-30 修（「设置页改了模型，得退出重进才生效」）：
+    //   以前是 `if (user[k] === undefined) out[k] = saved[k]` —— 只要某个键在原生设置页设过一次，
+    //   就永远用 row.value。可 row.value 是启动快照，改完不刷新，于是插件页改完又被旧值盖回去。
+    //
+    //   现在分三层，优先级从高到低：
+    //     ① **`apply(ctx, config)` 收到的 config** —— 只改 volatile 字段时宿主**就地**改这个对象
+    //        （cordis-plugin-loader 的 `_commitVolatile`），所以它永远是设置页最新那份；
+    //     ② `config.json`（persistCfg 刚写下去的，也够新）；
+    //     ③ `row.value`（可能是启动快照，只在上面两个都没有时才用）。
+    //   ⚠ config 的字段可能是对象/坏值（2026-10-14 那次事故），所以过一遍 normalize 再取。
+    let 热配置 = {}
+    try { 热配置 = normalize(config, { ...DEFAULTS }) } catch (error) { 热配置 = {} }
+    const 热配置有的键 = new Set()
+    try {
+      const 原 = config && typeof config === 'object' ? config : {}
+      for (const k of Object.keys(DEFAULTS)) if (原[k] !== undefined && 原[k] !== null) 热配置有的键.add(k)
+    } catch (error) {}
+    const 落过盘 = savedKeys()
+    for (const k of Object.keys(DEFAULTS)) {
+      if (热配置有的键.has(k)) out[k] = 热配置[k]
+      else if (落过盘.has(k)) out[k] = saved[k]
+    }
     // ⭐ pythonPath 是插件自己管的；DSH 原生设置传来的常是坏值/默认值，config.json 也可能被重置
     //    → 取 config.json；还是默认坏值 'python'（或不存在）时，退回 stateDir 下 venv 的 python
     out.pythonPath = restorePythonPath(saved.pythonPath, join(stateDir, '.venv'), existsSync)
