@@ -258,7 +258,7 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
       // ⚠️ 不写依赖数组 = **每次渲染后都重贴一遍**。
       //    原来只写了 [tab]，可是设置页每次 load()/patch() 都会重渲染，
       //    重渲染后 React 会把 style 重新算一遍 → 所有小节又全露出来
-      //    （她的原话：「有些时候还是会跟原先的页面一样，所有东西堆在第一页」）。
+      //    （症状：有些时候还是会跟原先的页面一样，所有东西堆在第一页）。
       React.useEffect(() => { 应用页签(tab) })
 
       // ⭐ 进设置页就自动拉一次卡片（原来必须手点「刷新」，不点的话筛什么都是空的）
@@ -445,7 +445,7 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
       }
 
       // 手动看一眼 @ 和回复
-      // ⚠️ 2026-10-24 修（她报的「点了没反应」）：以前结果只写进页面最底下那行 msg，
+      // ⚠️ 2026-10-24 修：以前结果只写进页面最底下那行 msg，
       //    她点完看不到任何变化，看着就是「这个按钮没用了」。现在用 say()，顶部也显示一份。
       const onInbox = async () => {
         setBusy('inbox')

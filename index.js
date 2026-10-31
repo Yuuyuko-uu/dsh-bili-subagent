@@ -165,7 +165,7 @@ export const Config = !z ? undefined : z.object({
   perScan: z.natural().default(1).extra('volatile', true),
   /** ⭐ 自动刷在哪个会话触发（留空 = 自动挑最近聊过的那个会话） */
   targetSession: z.string().default('').extra('volatile', true),
-  /** ⭐ 主人的称呼（提示词里所有「小鱿鱼」都跟这个走） */
+  /** ⭐ 主人的称呼（提示词里所有称呼都跟这个走） */
   ownerName: z.string().default('你').extra('volatile', true),
   /** ⭐ 子代理的人设+流程提示词（占位符 {owner}/{direction}/{n}） */
   scanPrompt: z.string().default(SCAN_PROMPT_TMPL).extra('volatile', true),
@@ -1447,7 +1447,7 @@ export function apply(ctx, config) {
 
   // ⭐ 返回 null = **不过滤**（谁都理）；返回 Set = 只理名单里这些人。
   //    ⚠️ 一开始是"留空就只理 dmUid"，可「别人回了我的评论」这条路的发送者**永远是别人**，
-  //       拿自己的 UID 当白名单等于把整个功能锁死（2026-10-21 她实测踩到）。
+  //       拿自己的 UID 当白名单等于把整个功能锁死（2026-10-21 踩到）。
   const inboxTargets = () => {
     const set = new Set()
     for (const x of String(cfg.inboxUids || '').split(/[,，\s]+/)) {
@@ -1489,7 +1489,7 @@ export function apply(ctx, config) {
               if (Number(m.from_uid) !== 我自己) 陌生人++     // 别人发的一律不理
               continue
             }
-            // ⚠️ 2026-10-24 修（她报的）：以前 `if (!bv) continue` —— **只认带视频的私信**，
+            // ⚠️ 2026-10-24 修：以前 `if (!bv) continue` —— **只认带视频的私信**，
             //    她单纯给 B站 那边发一句话（没有视频）就被静默丢掉，那边当然永远不回。
             //    现在纯文字私信也递；没视频就是「只说了一句话」，回法自然也不同（见 renderInbox / 触发语）。
             const bv = String(m.bv || '')
@@ -2096,7 +2096,7 @@ export function apply(ctx, config) {
     } catch { resolve(false) }
   })
 
-  const spawnLogged = (cmd, args) => new Promise((resolve) => {
+  const spawnLogged = (cmd, args, 超时秒 = 0) => new Promise((resolve) => {
     appendInstall(`\n$ ${cmd} ${args.join(' ')}\n`)
     let c
     try { c = spawn(cmd, args, { cwd: stateDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: pyEnv() }) }
@@ -2104,8 +2104,18 @@ export function apply(ctx, config) {
     const w = (b) => appendInstall(String(b))
     c.stdout?.on('data', w)
     c.stderr?.on('data', w)
-    c.on('exit', (code) => { appendInstall(`\n--- exit ${code} ---\n`); resolve(code) })
-    c.on('error', (e) => { appendInstall(`起不来：${e?.message ?? e}\n`); resolve(1) })
+    // ⭐ 1.0.0：可选超时。建 venv 时 uv 可能要联网下一份 Python，网络不通就会一直挂着；
+    //   不设超时的话「装依赖」永远停在那一行，人看着像卡死（而且没有回退的机会）。
+    let 定时 = null
+    const 收尾 = (code) => { if (定时) clearTimeout(定时); 定时 = null; appendInstall(`\n--- exit ${code} ---\n`); resolve(code) }
+    if (超时秒 > 0) {
+      定时 = setTimeout(() => {
+        appendInstall(`\n--- 超过 ${超时秒} 秒还没结束，掐掉 ---\n`)
+        try { c.kill() } catch { /* 已经退了 */ }
+      }, 超时秒 * 1000)
+    }
+    c.on('exit', 收尾)
+    c.on('error', (e) => { appendInstall(`起不来：${e?.message ?? e}\n`); 收尾(1) })
   })
 
   // ⭐ 判重表也由**宿主**预先建好（两个原因）：
@@ -2177,7 +2187,21 @@ export function apply(ctx, config) {
         if (!existsSync(venvPy)) {
           // ⭐ 2026-10-17（issue #8③）：ASR 那个环境带了 --seed，主环境却漏了 ⇒ uv 建的 venv 默认不含 pip，
           //    一旦镜像失败、回退 `python -m pip` 就是 `No module named pip` ⇒ 连补救的路都没有 ✗
-          if (uvCmd) await spawnLogged(uvCmd, ['venv', '--seed', join(stateDir, '.venv')])
+          //
+          // ⭐ 1.0.0：**建 venv 必须点名 Python 版本**。以前不指定，uv 就拿系统里那一版；
+          //   系统越新（3.15 / 3.16 …），pyyaml、cryptography 这些依赖越可能没有预编译 wheel，
+          //   只能现场编译 —— 普通用户机器上没有 VS 编译工具链，就卡在编译那一步装不完。
+          //   装不完 ⇒ venv 里没有 qrcode ⇒ 「扫码登录」画不出二维码（只剩一串 URL）。
+          //   现在明确要 3.14（这一版各依赖都有 wheel）；本机没有时 uv 会自己下一份，
+          //   下不动（网络到不了 GitHub）就退回不指定、用系统那一版，至少不比以前更糟。
+          if (uvCmd) {
+            const 要到了 = (await spawnLogged(
+              uvCmd, ['venv', '--seed', '--python', '3.14', join(stateDir, '.venv')], 300)) === 0
+            if (!要到了 && !existsSync(venvPy)) {
+              appendInstall('\n（没要到 3.14 —— 退回不指定版本，就用系统那一版）\n')
+              await spawnLogged(uvCmd, ['venv', '--seed', join(stateDir, '.venv')])
+            }
+          }
           if (!existsSync(venvPy) && !uvCmd) await spawnLogged(py, ['-m', 'venv', join(stateDir, '.venv')])
         }
         let code = 1
@@ -2384,7 +2408,7 @@ export function apply(ctx, config) {
       refreshCfg()
       // ⭐ 跟「自动刷」完全同一条路：往选定会话里发一句话，让伙伴自己去派子代理
       //    （不再拿"当前第一个 agent"当父会话 —— 那样子代理会跑到别的会话里去）
-      // ⚠️ 2026-10-24 修（她报的）：手动跑这一轮**以前不看收件箱** ——
+      // ⚠️ 2026-10-24 修：手动跑这一轮**以前不看收件箱** ——
       //    你私信转给它的视频、别人回你的评论，都得等定时那一轮才带上，
       //    所以「现在跑一轮」永远不回复私信。现在跟定时跑一样先拉一遍。
       let extra = ''
