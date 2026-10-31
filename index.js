@@ -558,6 +558,15 @@ export function apply(ctx, config) {
     const clean = clampPatch(patch)
     saveCfg(clean)
     const host = await saveCfgHost(clean)
+    // ⚠⚠ 0.9.0：`ctx.settings.update()` 只改磁盘 + 设置页，**不会同步更新 `apply(ctx, config)`
+    //   拿到的那个 config 对象**。而 loadCfg() 把「这个对象」排在 config.json 前面（见上面三层），
+    //   于是插件页改完值 → 下一次读又被内存里的旧值盖回去（表现就是「所有选项都自己弹回」）。
+    //   这里把刚存的值同步进内存那份，两边就不再打架。
+    try {
+      if (config && typeof config === 'object') Object.assign(config, clean)
+    } catch (error) {
+      log('同步内存配置失败（只能靠 config.json 那份）：' + String((error && error.message) || error))
+    }
     return { clean, host }
   }
 
