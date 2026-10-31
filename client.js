@@ -433,7 +433,18 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
         return h('div', { 'data-bd-page': '' }, h('div', { 'data-bd-note': '' }, '读设置中…'))
       }
 
-      const 更新命令 = ['dsh plugin --profile web remove dsh-bili-subagent', 'dsh plugin --profile web add dsh-bili-subagent'].join(String.fromCharCode(10))
+      // ⭐ 2026-11-01：查到新版就一键装（宿主的 pluginManager.installBundle）
+      const installUpdate = async () => {
+        setUpBusy(true)
+        setMsg('正在装…')
+        try {
+          const r = await jpost('/install', {})
+          setMsg(r && r.ok ? '已经开始装了 —— 装完重启（或重载）一次 dsh 才生效' : '没装成：' + ((r && r.error) || '不知道原因'))
+        } catch (e) {
+          setMsg('没装成：' + ((e && e.message) || e))
+        }
+        setUpBusy(false)
+      }
       const checkUpdate = async () => {
         setUpBusy(true)
         try {
@@ -502,14 +513,12 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
             h('div', { 'data-bd-grow': '' }),
             h('button', { 'data-bd-btn': '', disabled: upBusy, onClick: checkUpdate },
               upBusy ? '查…' : '检查更新')),
-          (up && up.hasUpdate) ? h('div', { 'data-bd-note': '' }, '更新方法：先卸旧版再装新版（直接装可能拿到缓存里的旧副本）。') : null,
-          (up && up.hasUpdate) ? h('div', { 'data-bd-code': '' }, 更新命令) : null,
           (up && up.hasUpdate)
             ? h('div', { 'data-bd-row': '' },
-              h('button', {
-                'data-bd-btn': '',
-                onClick: () => navigator.clipboard.writeText(更新命令).then(() => setMsg('命令已复制')).catch(() => setMsg('复制不了，手动选中吧')),
-              }, '复制命令'),
+              (up && up.canInstall)
+                ? h('button', { 'data-bd-btn': '', disabled: upBusy, onClick: installUpdate },
+                  upBusy ? '装…' : '一键更新到 v' + up.latest)
+                : h('span', { 'data-bd-note': '' }, '这是本地开发副本（link: 进来的），请手动更新。'),
               (up.repoUrl ? h('a', { 'data-bd-note': '', href: up.repoUrl, target: '_blank', rel: 'noreferrer' }, '去 GitHub 看看') : null))
             : null),
 
