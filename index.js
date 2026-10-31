@@ -428,6 +428,12 @@ export function apply(ctx, config) {
     if ('dynamicPrompt' in p) p.dynamicPrompt = String(p.dynamicPrompt || '').slice(0, 4000)
     if ('watchInterval' in p) p.watchInterval = Math.max(60, Math.min(Number(p.watchInterval) || 120, 1800))
     if ('watchScope' in p) p.watchScope = ['valley', 'always'].includes(String(p.watchScope)) ? String(p.watchScope) : 'valley'
+    // ⭐ 0.9.1：schema 里是 string 的字段，先统一成字符串再交给宿主 ——
+    //   直接 POST 数字（比如 inboxUids: 22761155）会被 DSH 的 schema 整批拒掉，
+    //   同一批里合法的 8 个字段也跟着白写（2026-10-31 有人就这么中过一次）。
+    for (const k of ['inboxUids', 'inboxMsg', 'dmUidText', 'mentionName', 'ownerName']) {
+      if (k in p) p[k] = Array.isArray(p[k]) ? p[k].join(',') : String(p[k] ?? '')
+    }
     return p
   }
 
@@ -454,7 +460,12 @@ export function apply(ctx, config) {
    */
   const settingsDesc = (fresh = false) => {
     const t = Date.now()
-    if (!fresh && t - settingsRow.at < 3000) return settingsRow.row   // 挡 UI 轮询：describe() 要扫所有条目
+    // ⭐ 0.9.1：**拿不到行的时候别把 null 粘 3 秒**。
+    //   宿主刚 re-apply 的几百毫秒里 describe() 会短暂没有我们这一行，旧代码抓到 null 就缓存 3 秒，
+    //   于是这期间的每一次保存都报「没有可写的设置表单」（2026-10-31 有人一天撞了十几次）。
+    //   现在只有**成功**的那次缓存 3 秒（挡 UI 轮询），null 只缓存 250ms。
+    const 缓存时长 = settingsRow.row ? 3000 : 250
+    if (!fresh && t - settingsRow.at < 缓存时长) return settingsRow.row
     let row = null
     try {
       const rows = ctx.settings?.describe?.() || []
@@ -483,35 +494,71 @@ export function apply(ctx, config) {
     }
     return out
   }
+  // ⭐ 0.9.1：三个来源打架的探针 —— 同一个键只记一次，用来确定到底哪一层在盖哪一层
+  const 报过差异 = new Set()
+  const 配置探针 = (盘上, saved, 种子有, 种子, 用户改过, row) => {
+    try {
+      const 取 = (k) => {
+        const a = 盘上.has(k) ? JSON.stringify(saved[k]) : '—'
+        const b = 种子有.has(k) ? JSON.stringify(种子[k]) : '—'
+        const c = 用户改过.has(k) ? JSON.stringify(row?.value?.[k]) : '—'
+        return { a, b, c }
+      }
+      for (const k of Object.keys(DEFAULTS)) {
+        if (报过差异.has(k)) continue
+        const { a, b, c } = 取(k)
+        const 有效 = [a, b, c].filter((x) => x !== '—')
+        if (有效.length >= 2 && new Set(有效).size > 1) {
+          报过差异.add(k)
+          log(`配置探针：${k} 盘上=${a} 内存种子=${b} 宿主生效值=${c}`)
+        }
+      }
+    } catch (error) {}
+  }
   const loadCfg = () => {
     const saved = savedCfg()
     const row = settingsDesc()
     // ⭐ 读回来统一过一遍范围：原生设置页那边我们是钳不到写的（见 clampPatch 的注释）
     if (!row) return clampPatch(迁移老配置(saved, {}))
     const user = row.user || {}
-    // ⭐ 用 row.value（DSH 原生设置的「生效值」，标量可靠），别用 apply 的 config 参数（字段常是坏值/对象，一丢就回默认）
+    // 底座：宿主那份「生效值」（标量可靠，默认值也齐）
     const out = normalize(row.value, { ...DEFAULTS })
-    // ⚠⚠ 2026-10-30 修（「设置页改了模型，得退出重进才生效」）：
-    //   以前是 `if (user[k] === undefined) out[k] = saved[k]` —— 只要某个键在原生设置页设过一次，
-    //   就永远用 row.value。可 row.value 是启动快照，改完不刷新，于是插件页改完又被旧值盖回去。
-    //
-    //   现在分三层，优先级从高到低：
-    //     ① **`apply(ctx, config)` 收到的 config** —— 只改 volatile 字段时宿主**就地**改这个对象
-    //        （cordis-plugin-loader 的 `_commitVolatile`），所以它永远是设置页最新那份；
-    //     ② `config.json`（persistCfg 刚写下去的，也够新）；
-    //     ③ `row.value`（可能是启动快照，只在上面两个都没有时才用）。
-    //   ⚠ config 的字段可能是对象/坏值（2026-10-14 那次事故），所以过一遍 normalize 再取。
-    let 热配置 = {}
-    try { 热配置 = normalize(config, { ...DEFAULTS }) } catch (error) { 热配置 = {} }
-    const 热配置有的键 = new Set()
+    // ⚠⚠ 2026-10-31 夜 0.9.1 重写（上一版 0.9.0 只治了标）：
+    //   以前把 `apply(ctx, config)` 那份内存对象排在**第一**，理由是「只改 volatile 字段时宿主会就地改它」。
+    //   可宿主重新 apply 插件时给的是**另一个对象**，里面可能是上一版的旧值；它一旦盖住刚存进
+    //   config.json 的新值，之后**任何一次保存都会把这个旧值写回磁盘** —— 于是值永久弹回。
+    //   现在只认一个真相，三层各有各的适用范围，谁都不许顺手覆盖别人：
+    //     ① 用户在**原生设置页**显式设过的键（`row.user` 里出现过）→ 宿主那份赢（它就是用户的原话）
+    //     ② 否则，`config.json` 里写过这个键 → 盘上那份赢（插件页改的都落在这儿，最不容易是旧的）
+    //     ③ 否则，才拿 apply 收到的 config 当**种子**（只用来补「从来没存过」的键）
+    const 盘上 = savedKeys()
+    // ⭐ 0.9.1：宿主那次写**失败**时（noForm / revision 重试也失败），这个键只能信 config.json。
+    //   不然「用户以前在原生页设过」+「这次插件页改了但宿主没写成」两件事一撞，旧值又盖回来。
+    const 本地优先 = new Set()
     try {
-      const 原 = config && typeof config === 'object' ? config : {}
-      for (const k of Object.keys(DEFAULTS)) if (原[k] !== undefined && 原[k] !== null) 热配置有的键.add(k)
+      const 原 = readJson(cfgFile, {}) || {}
+      for (const k of (Array.isArray(原._本地优先) ? 原._本地优先 : [])) 本地优先.add(String(k))
     } catch (error) {}
-    const 落过盘 = savedKeys()
+    const 用户改过 = new Set(
+      Object.keys(user).filter((k) => user[k] !== undefined && user[k] !== null),
+    )
+    let 种子 = {}
+    try { 种子 = normalize(config, { ...DEFAULTS }) } catch (error) { 种子 = {} }
+    const 种子有 = new Set()
+    try {
+      for (const k of Object.keys(DEFAULTS)) {
+        if (config[k] !== undefined && config[k] !== null) 种子有.add(k)
+      }
+    } catch (error) {}
+    配置探针(盘上, saved, 种子有, 种子, 用户改过, row)
     for (const k of Object.keys(DEFAULTS)) {
-      if (热配置有的键.has(k)) out[k] = 热配置[k]
-      else if (落过盘.has(k)) out[k] = saved[k]
+      if (本地优先.has(k)) {                 // ①' 宿主那次没写成 → 这个键只信盘上
+        if (盘上.has(k)) out[k] = saved[k]
+        continue
+      }
+      if (用户改过.has(k)) continue          // ① 已经就是 row.value 那份，不动
+      if (盘上.has(k)) out[k] = saved[k]     // ② 盘上优先于内存种子
+      else if (种子有.has(k)) out[k] = 种子[k]  // ③ 兜底种子
     }
     // ⭐ pythonPath 是插件自己管的；DSH 原生设置传来的常是坏值/默认值，config.json 也可能被重置
     //    → 取 config.json；还是默认坏值 'python'（或不存在）时，退回 stateDir 下 venv 的 python
@@ -526,14 +573,40 @@ export function apply(ctx, config) {
   const cfg = loadCfg()
   // ⭐ 配置是"随时可能被设置页就地改掉"的东西 ⇒ 每个入口用之前重算一遍（cfg 这个对象要一直指向同一份）
   const refreshCfg = () => { Object.assign(cfg, loadCfg()) }
-  const saveCfg = (patch) => { Object.assign(cfg, normalize(patch, cfg)); writeJson(cfgFile, cfg) }
+  // ⭐ 0.9.1：只把**这次改动的键**写回磁盘，不再整份覆盖 ——
+  //   整份写会把内存里任何一个旧值顺手焊进磁盘（"永久弹回"就是这么来的）。
+  const saveCfg = (patch) => {
+    const 变 = normalize(patch, cfg)
+    Object.assign(cfg, 变)
+    try {
+      const 旧 = readJson(cfgFile, {}) || {}
+      const 只改 = {}
+      for (const k of Object.keys(patch || {})) if (k in 变) 只改[k] = 变[k]
+      writeJson(cfgFile, { ...旧, ...只改 })
+    } catch (error) {
+      writeJson(cfgFile, cfg)
+    }
+  }
   /**
    * ⭐ 同时写一份到宿主：不写的话会出现死结 —— 某个键一旦在原生设置页设过就由宿主说了算，
    *    插件页再改那个键就成了"改了没反应" ✗。写失败不算致命（config.json 那份还在），把话带回给用户。
    */
   const saveCfgHost = async (patch) => {
+    // ⭐ 0.9.1：宿主刚 re-apply 的几百毫秒里 describe() 会短暂没有我们这一行。
+    //   旧代码一抓不到就判"没有可写的表单"，用户看到保存成功、其实只写进了 config.json。
+    //   现在最多等 ~0.6 秒、其间强制重扫几次再判失败。
+    const 找行 = async () => {
+      const 先 = settingsDesc(false)
+      if (先?.ns) return 先
+      for (let i = 0; i < 4; i++) {
+        await new Promise((r) => setTimeout(r, 150))
+        const 再 = settingsDesc(true)
+        if (再?.ns) return 再
+      }
+      return null
+    }
     const attempt = async (fresh) => {
-      const row = settingsDesc(fresh)
+      const row = fresh ? await 找行() : (settingsDesc(false) || await 找行())
       if (!row?.ns || typeof ctx.settings?.update !== 'function') {
         throw Object.assign(new Error('DSH 这边没有可写的设置表单（值只落在插件自己的 config.json 里）'), { noForm: true })
       }
@@ -566,6 +639,20 @@ export function apply(ctx, config) {
       if (config && typeof config === 'object') Object.assign(config, clean)
     } catch (error) {
       log('同步内存配置失败（只能靠 config.json 那份）：' + String((error && error.message) || error))
+    }
+    // ⭐ 0.9.1：宿主没写成的时候，这几个键以后只能信 config.json ——
+    //   记进 `_本地优先`，读配置时跳过「原生设置页设过就让它赢」那条，否则旧值又会盖回来。
+    try {
+      const 旧 = readJson(cfgFile, {}) || {}
+      const 名单 = new Set(Array.isArray(旧._本地优先) ? 旧._本地优先.map(String) : [])
+      for (const k of Object.keys(clean || {})) {
+        if (host.ok) 名单.delete(k)
+        else 名单.add(k)
+      }
+      旧._本地优先 = [...名单]
+      writeJson(cfgFile, 旧)
+    } catch (error) {
+      log('记本地优先名单失败（不影响这次保存）：' + String((error && error.message) || error))
     }
     return { clean, host }
   }
@@ -1857,6 +1944,9 @@ export function apply(ctx, config) {
       if (模式 === 'manual') return
       const now = new Date()
       const st = readJson(dutyStateFile, {})
+      // ⭐ 0.9.1：上一轮**没投出去**（目标会话没醒着之类）时给个冷却 ——
+      //   以前失败会把 lastRunAt 退回去，于是下一分钟又撞一次，日志一分钟一条刷十几分钟。
+      if (Number(st.retryAfter || 0) > now.getTime()) return
       const today = dayKey(now)
       const used = countPickedToday(now)
       if (used >= Number(cfg.perDay || 0)) return
@@ -1873,7 +1963,7 @@ export function apply(ctx, config) {
         const key = `${today}:${k}`
         const rounds = used + 1
         const before = { windows: st.windows || {}, count: st.count || 0, picked: st.picked || 0, lastRunAt: st.lastRunAt || null, lastWhy: st.lastWhy || null }
-        bumpState({ windows: { ...(st.windows || {}), [key]: true }, count: rounds, picked: rounds, lastRunAt: now.toISOString(), lastWhy: k })
+        bumpState({ windows: { ...(st.windows || {}), [key]: true }, count: rounds, picked: rounds, lastRunAt: now.toISOString(), lastWhy: k, retryAfter: 0 })
         Promise.resolve((async () => {
           let extra = ''
           let box = []
@@ -1895,8 +1985,9 @@ export function apply(ctx, config) {
           .then((ok) => {
             // ⭐ 没投出去（目标会话没醒着之类）⇒ 把额度和间隔都退回去，下个周期还能重试
             if (ok === false) {
-              bumpState(before)
-              log('自动刷：这一轮没投出去，额度已退回，稍后重试')
+              // ⭐ 0.9.1：额度和间隔都退回，但**加 10 分钟冷却** —— 不然会话一直没醒着就每分钟撞一次
+              bumpState({ ...before, retryAfter: Date.now() + 10 * 60_000 })
+              log('自动刷：这一轮没投出去，额度已退回，10 分钟后再说（多半是目标会话没开着：去那儿说句话它就醒了）')
             }
           })
           .catch((e) => { log('自动刷：投递异常（已兜住）' + (e?.message ?? e)) })
