@@ -34,7 +34,7 @@ import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.
 import { ensureUv } from './lib/uvfetch.mjs'
 import { restorePythonPath, venvPythonPath } from './lib/platform-runtime.mjs'
 import { createSelfUpdate } from './lib/selfupdate.mjs'
-import { readWatchUnread, readAtReplies, deliverWatchBatch, createWatchTick } from './lib/watch.mjs'
+import { readWatchUnread, readAtReplies, deliverWatchBatch, createWatchTick, 私信有新 } from './lib/watch.mjs'
 
 export const name = 'bili-scroll'
 export const inject = ['webServer', 'tools', 'settings', 'subagents', 'agents', 'llm']
@@ -2016,14 +2016,37 @@ export function apply(ctx, config) {
   const 提醒间隔毫秒 = () => 钳提醒间隔(cfg.watchInterval) * 1000
   const 现在是谷时 = (now) => inValley(now, WINDOWS.noon) || inWindow(now, WINDOWS.night)
 
-  /** 私信那一路：先看谁有未读，再只读那几个人的最近几条 */
-  async function 收私信(feed) {
-    const box = readJson(watchFile, { seen: {} })
-    if (!box.seen || typeof box.seen !== 'object') box.seen = {}
+  /**
+   * ⭐ 0.9.4（用户报的）：读私信会话列表。
+   *
+   * ⚠ 为什么要单独抽出来：`bili_unread_messages`（消息中心的未读汇总）**不可信** ——
+   *   实测有的号那个接口里的 `chat` **永远是 0**，哪怕私信列表里明明有未读。
+   *   而 `bili_dm_sessions` 返回的每个会话自带 `unread`，那个是准的。
+   *   以前门槛只看汇总的 chat，于是「私信一直读不到、定时器一次都不跑」。
+   */
+  async function 读私信会话() {
     const raw = await call('bili_dm_sessions', { size: 10 }, { timeoutMs: 40_000 })
     const j = typeof raw === 'string' ? JSON.parse(raw) : raw
-    if (!j || j.ok === false || j.error) { log('提醒：私信会话列表读不到 ' + (j?.error ?? '')); return }
-    const 有新 = (j.items || []).filter((x) => Number(x.unread) > 0).slice(0, 3)
+    if (!j || j.ok === false || j.error) {
+      log('提醒：私信会话列表读不到 ' + (j?.error ?? ''))
+      return { 会话们: [], 有新: [] }
+    }
+    const 会话们 = Array.isArray(j.items) ? j.items : []
+    const 有新 = 会话们.filter((x) => Number(x.unread) > 0).slice(0, 3)
+    return { 会话们, 有新 }
+  }
+
+  /** 私信那一路：先看谁有未读，再只读那几个人的最近几条 */
+  async function 收私信(feed, 会话们) {
+    const box = readJson(watchFile, { seen: {} })
+    if (!box.seen || typeof box.seen !== 'object') box.seen = {}
+    // ⭐ 0.9.4：门槛那边已经读过会话列表了（为了不看汇总那个假 0），这里直接复用，别读两遍
+    let 列表 = Array.isArray(会话们) ? 会话们 : null
+    if (!列表) {
+      const 读 = await 读私信会话()
+      列表 = 读.会话们
+    }
+    const 有新 = 列表.filter((x) => Number(x.unread) > 0).slice(0, 3)
     for (const s of 有新) {
       let msgs = []
       try {
@@ -2078,18 +2101,38 @@ export function apply(ctx, config) {
     const now = new Date()
     if (String(cfg.watchScope || 'valley') === 'valley' && !现在是谷时(now)) return
 
-    // ① 先问一句最小的：未读数（B站 一个请求就给全：私信 chat / @ at / 收到的回复 recv_reply）
+    // ① 先问一句最小的：未读数（B站 一个请求给全：@ at / 收到的回复 recv_reply）
+    //   ⚠ 0.9.4：**汇总里的 chat 不能当门槛** —— 有的号那个数永远是 0（用户实测），
+    //     而私信列表自己的 unread 是准的。所以私信这一路改成问会话列表；
+    //     @ / 回复那两项照旧（那两项是好的）。
     const 数 = await readWatchUnread(call)
-    const 有私信 = 要私信 && Number(数.chat || 0) > 0
     const 有动静 = 要提醒 && (Number(数.at || 0) > 0 || Number(数.recv_reply || 0) > 0)
-    if (!有私信 && !有动静) return          // ⭐ 绝大多数时候走这条：什么都没发生，就一个数字
+    let 私信会话 = null
+    let 有私信 = false
+    if (要私信) {
+      let 列表 = null
+      try {
+        列表 = (await 读私信会话()).会话们
+      } catch (e) {
+        // 列表读不到 → 传 null，让 私信有新 退回看汇总（有的号汇总反而是对的）
+        log('提醒：私信列表读不到（退回看汇总）' + (e?.message ?? e))
+      }
+      const 判 = 私信有新(数, 列表)
+      私信会话 = 列表
+      有私信 = 判.有私信
+      // 汇总说 0、列表却说有 → 记一行，以后再有人报「一直读不到」能一眼看出来
+      if (判.来源 === '列表' && 判.有新.length && Number(数.chat || 0) <= 0) {
+        log('提醒：消息中心的未读说没有私信（chat=0），但私信列表里有 ' + 判.有新.length + ' 个会话有未读 —— 按列表走')
+      }
+    }
+    if (!有私信 && !有动静) return          // ⭐ 什么都没发生，就一两个请求
 
     // ② 有新东西才去读具体内容
     const 私信 = []
     const 提醒 = []
     if (有私信) {
       // 两条路各自兜住：一个人读不到，不该让 @ 那一路整跳不跑
-      try { await 收私信(私信) } catch (e) { log('提醒：私信那一路出错 ' + (e?.message ?? e)) }
+      try { await 收私信(私信, 私信会话) } catch (e) { log('提醒：私信那一路出错 ' + (e?.message ?? e)) }
     }
     if (有动静) {
       try { await 收提醒(提醒) } catch (e) { log('提醒：@ 那一路出错 ' + (e?.message ?? e)) }

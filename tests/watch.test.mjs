@@ -136,3 +136,38 @@ test('disabled or overlapping ticks do not run; successful poll keeps normal int
   release()
   await second
 })
+
+// ⭐ 0.9.4（用户报的「私信一直读不到」）：门槛不能只信消息中心的未读汇总。
+//   实测有的号 bili_unread_messages 里的 chat **永远是 0**，而私信列表里的 unread 是准的。
+test('私信门槛：列表里有未读、汇总 chat=0 → 仍然算「有私信」', async () => {
+  const { 私信有新 } = await import('../lib/watch.mjs')
+  const 会话们 = [
+    { talker_uid: 1, unread: 0 },
+    { talker_uid: 170065200, unread: 1, nick: '7D13' },
+  ]
+  const 判 = 私信有新({ chat: 0, at: 0, recv_reply: 0 }, 会话们)
+  assert.equal(判.有私信, true, '列表说有未读，就必须跑')
+  assert.equal(判.来源, '列表')
+  assert.deepEqual(判.有新.map((x) => x.talker_uid), [170065200])
+})
+
+test('私信门槛：列表读到了但没人有未读 → 不跑（不因为汇总乱报而白跑）', async () => {
+  const { 私信有新 } = await import('../lib/watch.mjs')
+  const 判 = 私信有新({ chat: 3 }, [{ talker_uid: 1, unread: 0 }])
+  assert.equal(判.有私信, false)
+})
+
+test('私信门槛：列表读不到（null）→ 退回看汇总 chat', async () => {
+  const { 私信有新 } = await import('../lib/watch.mjs')
+  assert.equal(私信有新({ chat: 2 }, null).有私信, true)
+  assert.equal(私信有新({ chat: 0 }, undefined).有私信, false)
+  assert.equal(私信有新(null, null).有私信, false)
+})
+
+test('私信门槛：一次最多挑 3 个会话去读内容', async () => {
+  const { pickUnreadSessions } = await import('../lib/watch.mjs')
+  const 会话们 = Array.from({ length: 8 }, (_, i) => ({ talker_uid: i + 1, unread: 1 }))
+  assert.equal(pickUnreadSessions(会话们).length, 3)
+  assert.equal(pickUnreadSessions([]).length, 0)
+  assert.equal(pickUnreadSessions(null).length, 0)
+})
