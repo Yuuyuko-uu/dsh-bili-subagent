@@ -222,6 +222,13 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
         if (cfg && targetSession === null) setTargetSession(cfg.targetSession || '')
         if (cfg && minViews === null) setMinViews(String(cfg.minViews ?? 0))
         if (cfg && minAgeDays === null) setMinAgeDays(String(cfg.minAgeDays ?? 0))
+        // ⚠ 0.9.6：这四个以前**漏在这一段回填里** —— 输入框的 value 绑的是 null
+        //   （`dynamicPerDay ?? ''`），所以永远是空的；保存却生效（config.json 里是对的）。
+        //   表现就是「设置页看不到当前值，但改了确实管用」。
+        if (cfg && dynamicPerDay === null) setDynamicPerDay(String(cfg.dynamicPerDay ?? 3))
+        if (cfg && dynamicGapMin === null) setDynamicGapMin(String(cfg.dynamicGapMin ?? 10))
+        if (cfg && dynamicTime === null) setDynamicTime(cfg.dynamicTime || '22:00')
+        if (cfg && dynamicSession === null) setDynamicSession(cfg.dynamicSession || '')
       }, [cfg])
       React.useEffect(() => { jget('/update').then((r) => setUp(r)).catch(() => {}) }, [])
 
