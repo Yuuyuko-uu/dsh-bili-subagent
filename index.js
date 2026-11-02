@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { McpClient } from './lib/mcp.mjs'
 import { verifyRecent, appendVerifyToReport } from './lib/verify.mjs'
+import { 记刷过的 } from './lib/seen.mjs'
 import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, inValley, dayKey } from './lib/state.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
@@ -921,6 +922,17 @@ export function apply(ctx, config) {
         st.lastBvs = bvs.slice(0, 20)
         writeJson(dutyStateFile, st)
         log('这一轮挑中 ' + bvs.length + ' 条，最值得的是 ' + bvs[0])
+        // ⭐ 0.9.7：**插件自己**把这一轮看过的视频记进判重表。
+        //   以前「## 看过的视频」这一节从来没人写（提示词只交代了"读"和"记评论"），
+        //   表一直是空的 ⇒ 判重等于没有，每轮都从头挑。
+        try {
+          // 只记**这一轮真刷出来（写进报告）的**那几条；搜出来但没挑中的不记 ——
+          // 那几条里可能就有好东西，下一轮还该有机会。
+          const 新记 = 记刷过的(join(stateDir, 'seen.md'), bvs, new Date().toISOString().slice(0, 10))
+          if (新记.length) log('判重表记下 ' + 新记.length + ' 条刷过的视频')
+        } catch (e) {
+          log('往判重表记「刷过的」没成：' + (e && e.message ? e.message : e))
+        }
         if (cfg.notesOn) {
           const 笔记夹 = join(outDir, 'reports')
           try { mkdirSync(笔记夹, { recursive: true }) } catch (e) {}
@@ -1095,6 +1107,7 @@ export function apply(ctx, config) {
       //    → 顺手记一条，卡片墙上就有它。
       try {
         if (扫描中 === 0) void 写看过笔记(号, '她自己看的（分享/点名让我看）', 从结果取文字(结果).slice(0, 800))
+
       } catch (e) {}
       return 结果
     },
@@ -1184,6 +1197,7 @@ export function apply(ctx, config) {
       const 结果 = await call('bili_triple', { bvid: bvid, mode: mode, coin_num: coin })
       try {
         if (扫描中 === 0) void 写看过笔记(bvid, '她点了三连（' + mode + '）', '')
+
       } catch (e) {}
       return 结果
     },
