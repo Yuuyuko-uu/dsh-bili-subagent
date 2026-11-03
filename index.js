@@ -25,8 +25,10 @@ const defineTool = hostDeps.defineTool
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import * as zlib from 'node:zlib'
 import { McpClient } from './lib/mcp.mjs'
 import { verifyRecent, appendVerifyToReport } from './lib/verify.mjs'
 import { 记刷过的 } from './lib/seen.mjs'
@@ -801,6 +803,105 @@ export function apply(ctx, config) {
     ].filter((x) => x !== '').join(String.fromCharCode(10))
   }
 
+  // ⭐ 2026-11-03：老版本 DSH 没有 subagents.startActivation（用户实报：
+  //   ctx.subagents.startActivation is not a function）。没有就走老办法 ——
+  //   新建一个会话、把提示词递进去、等它说完、再从它自己的日志里把回复捞出来。
+  const 家目录 = process.env.DSH_HOME || join(homedir(), '.dsh')
+
+  const 读会话最后一句话 = (sid) => {
+    try {
+      const 根 = join(家目录, 'sessions')
+      for (const ws of readdirSync(根, { withFileTypes: true })) {
+        const p = join(根, ws.name, sid, 'session.v4.jsonl.zstd')
+        if (!existsSync(p)) continue
+        const 缓 = readFileSync(p)
+        const 帧们 = []
+        for (let i = 0; i + 4 <= 缓.length; i++) {
+          if (缓[i] === 0x28 && 缓[i + 1] === 0xb5 && 缓[i + 2] === 0x2f && 缓[i + 3] === 0xfd) 帧们.push(i)
+        }
+        let 最后 = ''
+        for (let k = 0; k < 帧们.length; k++) {
+          const 段 = 缓.subarray(帧们[k], k + 1 < 帧们.length ? 帧们[k + 1] : 缓.length)
+          let 文 = ''
+          try {
+            文 = zlib.zstdDecompressSync(段).toString('utf8')
+          } catch (e) {
+            continue
+          }
+          for (const 行 of 文.split(String.fromCharCode(10))) {
+            if (!行.trim()) continue
+            let e
+            try {
+              e = JSON.parse(行)
+            } catch (err) {
+              continue
+            }
+            if (e.type !== 'assistant/message') continue
+            const c = e.data && e.data.message && e.data.message.content
+            const t = (Array.isArray(c) ? c : []).filter((x) => x && x.type === 'text').map((x) => x.text).join('')
+            if (t && t.trim()) 最后 = t
+          }
+        }
+        return 最后
+      }
+    } catch (e) {}
+    return ''
+  }
+
+  const 兜底派活 = async (prompt, 子provider, 子model) => {
+    if (typeof ctx.agents?.create !== 'function') {
+      return { ok: false, error: '这台 DSH 既没有 startActivation，也不能新建会话 —— 派不了' }
+    }
+    const sid = 'session-' + randomUUID()
+    let handle = null
+    try {
+      handle = await ctx.agents.create({
+        sessionId: sid,
+        meta: { cwd: stateDir },
+        ...(子provider && 子model ? { agentOptions: { provider: 子provider, model: 子model } } : {}),
+      })
+    } catch (e) {
+      return { ok: false, error: '新建会话失败：' + (e?.message ?? e) }
+    }
+    const agent = handle && handle.agent
+    if (!agent || typeof agent.followup !== 'function') {
+      try { handle?.dispose?.() } catch (e) {}
+      return { ok: false, error: '新会话没起来' }
+    }
+    let 完了 = false
+    const 等 = new Promise((res) => {
+      try {
+        agent.ctx.on('agent/turn-stopping', () => {
+          if (完了) return
+          完了 = true
+          setTimeout(res, 1200)
+        })
+      } catch (e) {}
+      setTimeout(() => {
+        if (!完了) {
+          完了 = true
+          res()
+        }
+      }, 15 * 60_000)
+    })
+    try {
+      await agent.followup({
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text: prompt }],
+        source: { kind: 'plugin:bili-scan' },
+      })
+    } catch (e) {
+      try { handle?.dispose?.() } catch (err) {}
+      return { ok: false, error: '派活失败：' + (e?.message ?? e) }
+    }
+    await 等
+    const 出 = 读会话日志最后一句话(sid)
+    try { handle?.dispose?.() } catch (e) {}
+    if (!出) return { ok: false, error: '派出去的会话没交出结果（日志里没找到回复）' }
+    return { ok: true, output: 出 }
+  }
+
   const scanWith = async (parent, direction, exec, bvid = '') => {
     const dir = String(direction || '').trim()
       || (Array.isArray(cfg.keywords) ? cfg.keywords.filter(Boolean).join(' ') : '')
@@ -837,6 +938,16 @@ export function apply(ctx, config) {
       //    自动刷一派子代理就失败。现在**两个都填了才指定**，留空就跟当前会话用一样的。
       const 子provider = String(cfg.subProvider || '').trim()
       const 子model = String(cfg.subModel || '').trim()
+      // ⭐ 这台 DSH 有没有新接口？没有就走兜底（新建会话 + 递提示词 + 读日志）
+      if (!ctx.subagents || typeof ctx.subagents.startActivation !== 'function') {
+        log('这台 DSH 没有 subagents.startActivation，改用兜底：新建会话派活')
+        const 兜 = await 兜底派活(prompt, 子provider, 子model)
+        if (!兜.ok) {
+          扫描中 = Math.max(0, 扫描中 - 1)
+          return { ok: false, error: 兜.error }
+        }
+        return { ok: true, report: 兜.output, hint: '' }
+      }
       run = await ctx.subagents.startActivation({
         provider: 'spawn',
         label: '刷B站：' + dir.slice(0, 20),
@@ -1483,13 +1594,29 @@ export function apply(ctx, config) {
       const base = join(dirname(stateDir), 'storages')
       const sessRoot = join(dirname(stateDir), 'sessions')
       const cacheDir = join(base, 'session_projcache', 'sessions')
+      // ⚠ 归档要实时：界面上一归档，就不能再被挑中。存储文件只在退出时刷，所以先问服务。
       const archived = new Set()
+      try {
+        const wr = typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined
+        const ids = wr && wr.archivedSessionIds
+        if (Array.isArray(ids)) for (const id of ids) archived.add(String(id))
+      } catch {}
       try {
         for (const id of (readJson(join(base, 'workspace.json'), {})?.global?.archivedSessionIds || [])) archived.add(String(id))
       } catch {}
       let best = null
-      for (const ws of listDirs(sessRoot)) {
-        for (const sid of listDirs(join(sessRoot, ws))) {
+      // ⭐ 「未分组」那批会话直接躺在 sessions/<会话id>/ 下（没有中间那层工作区目录），
+      //   以前只认 sessions/<工作区>/<会话>，所以这批永远挑不到 —— 两级都认。
+      const 位置 = []
+      for (const 一层 of listDirs(sessRoot)) {
+        if (existsSync(join(sessRoot, 一层, 'session.v4.jsonl.zstd'))) {
+          位置.push({ ws: '', sid: 一层 })
+          continue
+        }
+        for (const sid of listDirs(join(sessRoot, 一层))) 位置.push({ ws: 一层, sid })
+      }
+      for (const { ws, sid } of 位置) {
+        {
           if (!是会话目录(sid)) continue
           if (archived.has(sid)) continue
           if (!existsSync(join(sessRoot, ws, sid, 'session.v4.jsonl.zstd'))) continue
