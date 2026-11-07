@@ -1577,6 +1577,8 @@ async def bili_dm_recent(size: int = 20, talker_id: int = 0, pages: int = 1) -> 
             c = json.loads(m.get("content") or "{}")
         except Exception:
             c = {}
+        if not isinstance(c, dict):
+            c = {}   # msg_type=5 的 content 是纯数字，json.loads 出来是 int
         bv = ""
         is_card = False
         if mt in (7, 8) and (c.get("jump_url") or c.get("bvid") or c.get("author") or c.get("title")):
@@ -1651,6 +1653,8 @@ async def bili_dm_sessions(size: int = 10) -> str:
             c = json.loads(lm.get("content") or "{}")
         except Exception:
             c = {}
+        if not isinstance(c, dict):
+            c = {}   # msg_type=5 的 content 是纯数字，json.loads 出来是 int
         is_card = mt in (7, 8)
         text = "[分享视频] " + str(c.get("title") or c.get("headline") or "")[:80] if is_card \
             else str(c.get("content") or c.get("text") or "")
