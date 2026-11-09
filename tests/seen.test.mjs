@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { 记刷过的, 解析条目, 刷过了 } from '../lib/seen.mjs'
+import { 记刷过的, 解析条目, 刷过了, 最近看过的 } from '../lib/seen.mjs'
 
 // 0.9.7：判重表只记「真刷出来（写进报告）的」那几条，一档，不写状态。
 //   搜出来读过字幕但没挑中的**不记** —— 那些下一轮还该有机会。
@@ -80,4 +80,28 @@ test('非法 BV 不写；重复的只记一次', () => {
   assert.deepEqual(记刷过的(路, ['随便', '', null, 'BV123'], '2026-11-02'), [])
   assert.deepEqual(记刷过的(路, ['BV19Jx46eEkg', 'BV19Jx46eEkg'], '2026-11-02'), ['BV19Jx46eEkg'])
   assert.equal((readFileSync(路, 'utf8').match(/^- BV/gm) || []).length, 1)
+})
+
+// 0.9.9：判重表**被读**了 —— 最近刷过的要能塞进提示词，告诉子代理别再挑。
+test('最近看过的：取文件顺序最后 N 条（追加顺序 = 刷的顺序）', () => {
+  const 路 = 建表(表头 + '- BVaaa0000001 2026-11-01\n- BVbbb0000002 2026-11-02\n- BVccc0000003 2026-11-03\n')
+  assert.deepEqual(最近看过的(路, 2), ['BVbbb0000002', 'BVccc0000003'])
+  assert.deepEqual(最近看过的(路, 99), ['BVaaa0000001', 'BVbbb0000002', 'BVccc0000003'])
+  assert.deepEqual(最近看过的(路, 0), [])
+  assert.deepEqual(最近看过的(路, -1), [])
+})
+
+test('最近看过的：表不存在 / 空表不炸，返回空数组', () => {
+  const 夹 = mkdtempSync(join(tmpdir(), 'seen-'))
+  assert.deepEqual(最近看过的(join(夹, 'nope.md'), 10), [])
+  assert.deepEqual(最近看过的(建表(), 10), [])
+})
+
+test('最近看过的：只认「## 看过的视频」里的，评论记录表里的 BV 不算', () => {
+  const 带评论 = 表头.replace(
+    '| --- | --- | --- | --- | --- |',
+    '| --- | --- | --- | --- | --- |\n| BVzzz0000009 | 123 |  | 2026-11-02 10:00 | 随口一句 |',
+  )
+  const 路 = 建表(带评论 + '- BVaaa0000001 2026-11-01\n')
+  assert.deepEqual(最近看过的(路, 10), ['BVaaa0000001'])
 })
