@@ -1581,7 +1581,6 @@ export function apply(ctx, config) {
   /* ⭐ 2026-10-23（反馈）：原来只认 `session-` 开头的目录名，
    *    于是别的插件自己建的会话（`bili-whale`、IM 桥的 `im-…`）在下拉里根本选不到。
    *    真正该排掉的只有「裸 UUID」那些（子代理 / 会话内容的中间目录）。 */
-  const 是会话目录 = (sid) => !/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(sid || ''))
 
   // ⭐ 自动刷：到点不 headless，而是往「伙伴住的会话」followup 一句，让 TA 自己开一轮去刷（占每天额度）
   //   目标会话：设置里选的优先；没选就自动挑「最近聊过、非空、非归档」的那个 —— 不写死任何人的 id
@@ -1617,7 +1616,9 @@ export function apply(ctx, config) {
       }
       for (const { ws, sid } of 位置) {
         {
-          if (!是会话目录(sid)) continue
+          // ⚠ 别拿 id 的形状当判据：插件建的会话（QQ 群那种）就是裸 uuid，
+          //   按「看起来像 uuid 就跳过」会正好把「未分组」那批筛掉。
+          //   有没有日志才是判据（下一条）。
           if (archived.has(sid)) continue
           if (!existsSync(join(sessRoot, ws, sid, 'session.v4.jsonl.zstd'))) continue
           let at = 0
@@ -2770,9 +2771,17 @@ export function apply(ctx, config) {
           try { return readdirSync(p, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) } catch { return [] }
         }
         const rows = []
-        for (const ws of dirs(sessRoot)) {
-          for (const sid of dirs(join(sessRoot, ws))) {
-            if (!是会话目录(sid)) continue                       // 子代理（纯 UUID）不要
+        const 位置 = []
+        for (const 一层 of dirs(sessRoot)) {
+          // 「未分组」的会话直接躺在 sessions/<id>/ 下，没有中间那层工作区目录
+          if (existsSync(join(sessRoot, 一层, 'session.v4.jsonl.zstd'))) {
+            位置.push({ ws: '', sid: 一层 })
+            continue
+          }
+          for (const sid of dirs(join(sessRoot, 一层))) 位置.push({ ws: 一层, sid })
+        }
+        for (const { ws, sid } of 位置) {
+          {
             if (!existsSync(join(sessRoot, ws, sid, 'session.v4.jsonl.zstd'))) continue   // 没有日志 = 不算真会话
             if (archived.has(sid)) continue                                 // 跳过归档
             let title = ''
