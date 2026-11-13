@@ -23,6 +23,7 @@ import asyncio
 import json
 import base64
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -47,6 +48,77 @@ mcp = FastMCP("bilibili-mcp")
 #    · 给了 ⇒ 只注册名单里的；不在名单里的工具**连名字都不会出现在 list_tools 里**，
 #      模型那边等于根本不存在 —— 这才是真的闸门（光靠提示词说"别用"不算）✓
 _ALLOWED = {t.strip() for t in os.environ.get("BILI_MCP_TOOLS", "").split(",") if t.strip()}
+
+
+# ⭐ 0.9.9：判重表要**读**，不能只写。
+#    ⚠️ 0.9.7 让插件在轮末往「## 看过的视频」里记，但**没有任何代码读它**：
+#       `bili_search` 照旧把同一批热门视频端上来，子代理照旧挑中同一条 ——
+#       「判重」等于没有（实测：同一个视频被推了 9 次、评论 @ 了 9 次）。
+#       所以这里补两件事：搜索时**过滤**掉表里已有的；评论/三连之后**立刻记账**，
+#       让"伙伴自己挑"那条路（不走插件轮末记账）也能进表。
+SEEN_FILE = Path(__file__).parent / "seen.md"
+_SEEN_BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
+_SEEN_HEADER = (
+    "# 刷B站 · 判重表（宿主预建，那一轮只往后面追加）\n\n"
+    "## 评论记录（BV | rpid | root（楼中楼才填） | 时间 | 正文前 20 字）\n\n"
+    "| BV | rpid | root（楼中楼才填） | 时间 | 正文前 20 字 |\n"
+    "| --- | --- | --- | --- | --- |\n\n"
+    "## 看过的视频\n"
+)
+
+
+def _seen_bvs() -> set:
+    """表里出现过的所有 BV（评论过的 + 刷过的都算）"""
+    try:
+        if not SEEN_FILE.exists():
+            return set()
+        return set(_SEEN_BV_RE.findall(SEEN_FILE.read_text(encoding="utf-8")))
+    except OSError:
+        return set()
+
+
+def _seen_append(line: str) -> None:
+    try:
+        if not SEEN_FILE.exists():
+            SEEN_FILE.write_text(_SEEN_HEADER, encoding="utf-8")
+        with open(SEEN_FILE, "a", encoding="utf-8") as f:
+            f.write(line.rstrip("\n") + "\n")
+    except OSError as e:
+        print(f"[bili-mcp] 判重表写不进去：{e}", file=sys.stderr)
+
+
+def _seen_note_comment(bvid: str, rpid, text: str, root=None) -> None:
+    """评论记录要写进「## 评论记录」那张表里，不能甩到文件末尾 ——
+    `lib/verify.mjs` 虽然容错，但表坏了以后人工看就分不清哪行是哪节。"""
+    import time as _t
+    when = _t.strftime("%Y-%m-%d %H:%M", _t.localtime())
+    body = " ".join(str(text or "").split())[:20].replace("|", "／")
+    row = f"| {bvid} | {rpid or ''} | {root or ''} | {when} | {body} |"
+    try:
+        if not SEEN_FILE.exists():
+            SEEN_FILE.write_text(_SEEN_HEADER, encoding="utf-8")
+        行们 = SEEN_FILE.read_text(encoding="utf-8").split("\n")
+        起 = next((i for i, l in enumerate(行们) if l.strip().startswith("## 评论记录")), None)
+        if 起 is None:
+            _seen_append(row)
+            return
+        插 = 起 + 1
+        for i in range(起 + 1, len(行们)):
+            if 行们[i].startswith("## "):
+                break
+            if 行们[i].lstrip().startswith("|"):
+                插 = i + 1
+        行们.insert(插, row)
+        SEEN_FILE.write_text("\n".join(行们), encoding="utf-8")
+    except OSError as e:
+        print(f"[bili-mcp] 判重表写不进去：{e}", file=sys.stderr)
+
+
+def _seen_note_video(bvid: str) -> None:
+    import time as _t
+    if not _SEEN_BV_RE.fullmatch(str(bvid or "")):
+        return
+    _seen_append("- " + bvid + " " + _t.strftime("%Y-%m-%d"))
 
 
 def tool():
@@ -311,7 +383,19 @@ async def bili_search(keyword: str, num: int = 10, order: str = "totalrank") -> 
             "description": item.get("description", "")[:200],
         })
 
-    return json.dumps({"keyword": keyword, "count": len(videos), "videos": videos}, ensure_ascii=False)
+    # ⭐ 0.9.9：过滤掉判重表里已有的
+    #    （否则 click 排序每轮返回的前十条基本不变，等于每轮都从同一口锅里舀）
+    seen = _seen_bvs()
+    挡掉 = 0
+    if seen:
+        before = len(videos)
+        videos = [v for v in videos if v.get("bvid") not in seen]
+        挡掉 = before - len(videos)
+        if 挡掉:
+            print(f"[bili-mcp] 判重表挡掉 {挡掉} 条刷过的", file=sys.stderr)
+
+    return json.dumps({"keyword": keyword, "count": len(videos), "filtered_seen": 挡掉,
+                       "videos": videos}, ensure_ascii=False)
 
 
 # ========== Tool 2: 获取评论 ==========
@@ -575,6 +659,10 @@ async def bili_reply(bvid: str, text: str, rpid: int = 0, root: int = 0) -> str:
                 val = result.get(key)
                 if isinstance(val, (int, str)) and str(val).strip() and str(val) != "0":
                     out[key] = val
+        # ⭐ 0.9.9：发完立刻记账 —— 下一轮 bili_search 就不会再端上来
+        _seen_note_comment(bvid, out.get("rpid") or out.get("rpid_str"), text,
+                           root=root or (rpid if rpid else None))
+        _seen_note_video(bvid)
         return json.dumps(out, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -1486,6 +1574,9 @@ async def bili_triple(bvid: str, mode: str = "like", coin_num: int = 1) -> str:
         return json.dumps({"ok": False, "bvid": bvid, "title": title,
                            "做了": 做了, "error": str(e)}, ensure_ascii=False)
 
+    # ⭐ 0.9.9：三连过 = 已经刷到人眼前了，记进判重表（免得下一轮又推一遍）
+    _seen_note_video(bvid)
+
     return json.dumps({"ok": True, "bvid": bvid, "title": title, "mode": mode,
                        "做了": 做了, "跳过": 跳过}, ensure_ascii=False)
 
@@ -1577,6 +1668,8 @@ async def bili_dm_recent(size: int = 20, talker_id: int = 0, pages: int = 1) -> 
             c = json.loads(m.get("content") or "{}")
         except Exception:
             c = {}
+        if not isinstance(c, dict):
+            c = {}   # msg_type=5 的 content 是纯数字，json.loads 出来是 int
         bv = ""
         is_card = False
         if mt in (7, 8) and (c.get("jump_url") or c.get("bvid") or c.get("author") or c.get("title")):
@@ -1651,6 +1744,8 @@ async def bili_dm_sessions(size: int = 10) -> str:
             c = json.loads(lm.get("content") or "{}")
         except Exception:
             c = {}
+        if not isinstance(c, dict):
+            c = {}   # msg_type=5 的 content 是纯数字，json.loads 出来是 int
         is_card = mt in (7, 8)
         text = "[分享视频] " + str(c.get("title") or c.get("headline") or "")[:80] if is_card \
             else str(c.get("content") or c.get("text") or "")

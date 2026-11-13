@@ -31,7 +31,7 @@ import { randomUUID } from 'node:crypto'
 import * as zlib from 'node:zlib'
 import { McpClient } from './lib/mcp.mjs'
 import { verifyRecent, appendVerifyToReport } from './lib/verify.mjs'
-import { 记刷过的 } from './lib/seen.mjs'
+import { 记刷过的, 最近看过的 } from './lib/seen.mjs'
 import { WINDOWS, stateDirOf, readJson, writeJson, ensureHomeFiles, inWindow, inValley, dayKey } from './lib/state.mjs'
 import { loginStart, loginPoll, saveCredential, renderQrPng } from './lib/login.mjs'
 import { ensureUv } from './lib/uvfetch.mjs'
@@ -924,12 +924,27 @@ export function apply(ctx, config) {
     //    不塞评论块、不欠评论（连带 bili_send_message 那道「先发评论」的闸也不会挡）。
     //    从哪条路进来，就从哪条路回去；两个都做才是多此一举。
     const 私信回话 = Boolean(定点) && isDmShare(定点)
-    const prompt = (定点
+    let prompt = (定点
       ? String(cfg.watchPrompt || WATCH_TMPL).split('{bvid}').join(定点)
       : String(cfg.scanPrompt || SCAN_PROMPT_TMPL))
       .split('{owner}').join(owner)
       .split('{direction}').join(dir)
       .split('{n}').join(String(perRound)) + levelLine
+    // ⭐ 0.9.9：把判重表里最近刷过的 BV 直接写进提示词。
+    //   光靠插件在轮末「记」不够 —— 搜索接口不会因此少返回一条，
+    //   子代理照样会把同一个热门视频再挑一遍。必须**在派活之前就告诉它**别再挑。
+    //   定点（看某一条）不加：那条本来就是点名要看的。
+    if (!定点) {
+      try {
+        const 已刷过 = 最近看过的(join(stateDir, 'seen.md'), 40)
+        if (已刷过.length) {
+          prompt += '\n\n🚫 **下面这些已经刷过了，别再挑**（判重表里记着；再推一遍就是重复推送，是 bug）：'
+            + 已刷过.join('、')
+        }
+      } catch (e) {
+        log('读判重表没成（这轮不判重）：' + (e?.message ?? e))
+      }
+    }
 
     let run
     扫描中 += 1
