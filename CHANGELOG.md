@@ -1,3 +1,15 @@
+## 0.9.10 — 2026-11-14
+
+**rc.3 上 bili_scan 一直报「派子代理失败」**
+
+- 🐞 DSH 0.2.2-rc.3 把子代理接口改了：`startActivation` 换成了 `startContinuable`（形状一样），
+  另外还有一个一次性的 `start(provider, request)`。插件以前只认 `startActivation`，
+  在 rc.3 上要么落到兜底、要么在接口内部读 `request.parent.id` 时炸：
+  `Cannot read properties of undefined (reading 'id')`。
+- 现在按「有哪个用哪个」依次认：`startContinuable` → `startActivation` → `start` → 兜底新建会话。
+- 🐞 父会话补了一道检查：拿到的不是活着的 Agent（没有 `id`）就重问一次
+  `currentInitiator`，还拿不到就走兜底 —— 不把 `undefined` 递给接口。
+
 ## 0.9.9 — 2026-11-13
 
 **判重表只写不读：同一个热门视频被反复推、反复评论 @ 人**

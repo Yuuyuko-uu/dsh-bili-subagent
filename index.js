@@ -290,6 +290,20 @@ export function 拼提醒文案(items) {
   return 行们.filter((x, i, a) => !(x === '' && a[i - 1] === '')).join('\n')
 }
 
+/**
+ * ⭐ 0.9.10：这台 DSH 该用哪种子代理接口。
+ *   rc.1 / rc.2：`startActivation(spec)`
+ *   rc.3      ：`startContinuable(spec)`（可续，形状一样）和 `start(provider, request)`（一次性）
+ * 按「有哪个用哪个」的顺序认，都没有就返回 'none'（调用方走兜底新建会话）。
+ */
+export function 选子代理接口(服务) {
+  const 有 = (名) => Boolean(服务) && typeof 服务[名] === 'function'
+  if (有('startContinuable')) return 'continuable'
+  if (有('startActivation')) return 'activation'
+  if (有('start')) return 'start'
+  return 'none'
+}
+
 export function apply(ctx, config) {
   const pluginDir = dirname(fileURLToPath(import.meta.url))
   // ⭐ 自己的版本号（从 package.json 读，设置页要显示它）
@@ -953,27 +967,64 @@ export function apply(ctx, config) {
       //    自动刷一派子代理就失败。现在**两个都填了才指定**，留空就跟当前会话用一样的。
       const 子provider = String(cfg.subProvider || '').trim()
       const 子model = String(cfg.subModel || '').trim()
-      // ⭐ 这台 DSH 有没有新接口？没有就走兜底（新建会话 + 递提示词 + 读日志）
-      if (!ctx.subagents || typeof ctx.subagents.startActivation !== 'function') {
-        log('这台 DSH 没有 subagents.startActivation，改用兜底：新建会话派活')
-        const 兜 = await 兜底派活(prompt, 子provider, 子model)
-        if (!兜.ok) {
-          扫描中 = Math.max(0, 扫描中 - 1)
-          return { ok: false, error: 兜.error }
-        }
-        return { ok: true, report: 兜.output, hint: '' }
+      // ⭐ 这台 DSH 有哪种子代理接口？挨个认（0.9.10）。
+      //   rc.1/rc.2 是 `startActivation(spec)`；rc.3 改成了 `startContinuable(spec)`（形状一样）
+      //   和一次性用的 `start(name, request)`。以前只认 startActivation，rc.3 上要么走兜底、
+      //   要么在接口内部读 `request.parent.id` 时炸（用户实报：Cannot read properties of undefined (reading 'id')）。
+      // ⚠ 父会话得是**活着的 Agent**（接口内部要读 parent.id / parent.session）。
+      //   拿不到就重问一次 currentInitiator，还不行就走兜底，别把 undefined 递进去。
+      let 父 = parent
+      if (!父 || !父.id) {
+        try { 父 = ctx.agents?.currentInitiator?.() || 父 } catch (e) {}
       }
-      run = await ctx.subagents.startActivation({
-        provider: 'spawn',
-        label: '刷B站：' + dir.slice(0, 20),
-        request: {
-          prompt: [{ type: 'text', text: prompt }],
-          parent,
-          ...(子provider && 子model ? { agentOptions: { provider: 子provider, model: 子model } } : {}),
-        },
+      if (!父 || !父.id) {
+        log('没拿到活着的父会话（currentInitiator 空），改用兜底：新建会话派活')
+        const 兜2 = await 兜底派活(prompt, 子provider, 子model)
+        if (!兜2.ok) {
+          扫描中 = Math.max(0, 扫描中 - 1)
+          return { ok: false, error: 兜2.error }
+        }
+        return { ok: true, report: 兜2.output, hint: '' }
+      }
+      const 单次请求 = {
+        prompt: [{ type: 'text', text: prompt }],
+        parent: 父,
         signal: exec?.signal || new AbortController().signal,
-        delivery: 'caller',
-      })
+        ...(子provider && 子model ? { agentOptions: { provider: 子provider, model: 子model } } : {}),
+      }
+      const 接口 = 选子代理接口(ctx.subagents)
+      if (接口 === 'continuable') {
+        // rc.3：可续的子代理（形状跟老的 startActivation 一样）
+        run = await ctx.subagents.startContinuable({
+          provider: 'spawn',
+          label: '刷B站：' + dir.slice(0, 20),
+          request: 单次请求,
+          signal: exec?.signal || new AbortController().signal,
+        })
+      } else if (接口 === 'activation') {
+        // rc.1 / rc.2
+        run = await ctx.subagents.startActivation({
+          provider: 'spawn',
+          label: '刷B站：' + dir.slice(0, 20),
+          request: 单次请求,
+          signal: exec?.signal || new AbortController().signal,
+          delivery: 'caller',
+        })
+      } else if (接口 === 'start') {
+        // rc.3 的一次性派活：`start(provider, request)`
+        run = await ctx.subagents.start('spawn', {
+          label: '刷B站：' + dir.slice(0, 20),
+          ...单次请求,
+        })
+      } else {
+        log('这台 DSH 没有可用的子代理接口，改用兜底：新建会话派活')
+        const 兜3 = await 兜底派活(prompt, 子provider, 子model)
+        if (!兜3.ok) {
+          扫描中 = Math.max(0, 扫描中 - 1)
+          return { ok: false, error: 兜3.error }
+        }
+        return { ok: true, report: 兜3.output, hint: '' }
+      }
     } catch (e) {
       扫描中 = Math.max(0, 扫描中 - 1)
       return { ok: false, error: '派子代理失败：' + (e?.message ?? e) }
