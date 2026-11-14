@@ -1,3 +1,14 @@
+## 1.0.1 — 2026-11-14
+
+**rc.3 上还是「派子代理失败：Cannot read properties of undefined (reading 'id')」**
+
+- 🐞 1.0.0 只改了「用哪个方法」，没改「参数长什么样」。rc.3 的 `startActivation` 要的是
+  **扁平 spec** —— 它内部读 `spec.parent.id`，`parent` 和 `prompt` 都在顶层；
+  而插件传的是 `{ request: { prompt, parent } }`，等于 `spec.parent` 是 undefined，一读 `.id` 就抛。
+- 现在把几种形状都造出来挨个试：`continuable` → `activation-flat`（rc.3）→ `activation-nested`（rc.1/rc.2）
+  → `start(name, request)`，哪个不抛用哪个；全都不行再退回「新建会话派活」，`bili_scan` 不会整条挂掉。
+- 日志里会写一句「子代理派活走的是：xxx」，下次对不上版本一眼能看出来。
+
 ## 1.0.0 — 2026-11-14
 
 **rc.3 上 bili_scan 一直报「派子代理失败」**

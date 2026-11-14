@@ -304,6 +304,43 @@ export function 选子代理接口(服务) {
   return 'none'
 }
 
+/**
+ * ⭐ 1.0.1：造子代理的调用参数。
+ *
+ * 这里踩过两次坑，形状**每个版本都不一样**：
+ *   · rc.1 / rc.2：`startActivation({ provider, label, request: { prompt, parent }, signal, delivery })`
+ *   · rc.3      ：`startActivation` 还在，但要的是**扁平 spec** —— 它内部读的是 `spec.parent.id`，
+ *                  `parent` 和 `prompt` 都在顶层，不包 `request`
+ *   · 另外还有 `startContinuable(spec)`（request 包一层）和 `start(name, request)`（一次性）
+ *
+ * 所以这里不猜：把几种形状都造出来，调用方挨个试，哪个不抛用哪个。
+ */
+export function 造子代理参数(模式, 基 = {}) {
+  const provider = String(基.provider || 'spawn')
+  const label = String(基.label || '')
+  const parent = 基.parent
+  const prompt = 基.prompt
+  const signal = 基.signal
+  const 额外 = 基.agentOptions ? { agentOptions: 基.agentOptions } : {}
+  const 请求 = { prompt, parent, signal, ...额外 }
+  if (模式 === 'continuable') {
+    return { provider, label, request: 请求, signal }
+  }
+  if (模式 === 'activation-flat') {
+    // rc.3：parent / prompt 都在顶层
+    return { provider, label, parent, prompt, signal, delivery: 'caller', ...额外 }
+  }
+  if (模式 === 'activation-nested') {
+    // rc.1 / rc.2：包一层 request
+    return { provider, label, request: 请求, signal, delivery: 'caller' }
+  }
+  if (模式 === 'start') {
+    // rc.3 的一次性派活：start(name, request)
+    return { 名: provider, 请求: { label, prompt, parent, signal, ...额外 } }
+  }
+  return null
+}
+
 export function apply(ctx, config) {
   const pluginDir = dirname(fileURLToPath(import.meta.url))
   // ⭐ 自己的版本号（从 package.json 读，设置页要显示它）
@@ -986,38 +1023,43 @@ export function apply(ctx, config) {
         }
         return { ok: true, report: 兜2.output, hint: '' }
       }
-      const 单次请求 = {
-        prompt: [{ type: 'text', text: prompt }],
+      const 基 = {
+        provider: 'spawn',
+        label: '刷B站：' + dir.slice(0, 20),
         parent: 父,
+        prompt: [{ type: 'text', text: prompt }],
         signal: exec?.signal || new AbortController().signal,
         ...(子provider && 子model ? { agentOptions: { provider: 子provider, model: 子model } } : {}),
       }
+      // ⭐ 1.0.1：形状挨个试，哪个不抛用哪个。
+      //   用户的实测：rc.3 上 `startActivation` 还在，但要的是**扁平 spec**（它内部读 `spec.parent.id`），
+      //   传 `{ request: { parent } }` 就等于 parent 是 undefined，直接抛 "reading 'id'"。
+      //   所以「扁平」排在「包一层」前面。
       const 接口 = 选子代理接口(ctx.subagents)
-      if (接口 === 'continuable') {
-        // rc.3：可续的子代理（形状跟老的 startActivation 一样）
-        run = await ctx.subagents.startContinuable({
-          provider: 'spawn',
-          label: '刷B站：' + dir.slice(0, 20),
-          request: 单次请求,
-          signal: exec?.signal || new AbortController().signal,
-        })
-      } else if (接口 === 'activation') {
-        // rc.1 / rc.2
-        run = await ctx.subagents.startActivation({
-          provider: 'spawn',
-          label: '刷B站：' + dir.slice(0, 20),
-          request: 单次请求,
-          signal: exec?.signal || new AbortController().signal,
-          delivery: 'caller',
-        })
-      } else if (接口 === 'start') {
-        // rc.3 的一次性派活：`start(provider, request)`
-        run = await ctx.subagents.start('spawn', {
-          label: '刷B站：' + dir.slice(0, 20),
-          ...单次请求,
-        })
-      } else {
-        log('这台 DSH 没有可用的子代理接口，改用兜底：新建会话派活')
+      const 试们 = []
+      if (接口 === 'continuable') 试们.push('continuable')
+      if (接口 === 'activation') 试们.push('activation-flat', 'activation-nested')
+      if (接口 === 'start') 试们.push('start')
+      let 最后错 = ''
+      for (const 模式 of 试们) {
+        try {
+          if (模式 === 'continuable') {
+            run = await ctx.subagents.startContinuable(造子代理参数('continuable', 基))
+          } else if (模式 === 'activation-flat' || 模式 === 'activation-nested') {
+            run = await ctx.subagents.startActivation(造子代理参数(模式, 基))
+          } else if (模式 === 'start') {
+            const 参 = 造子代理参数('start', 基)
+            run = await ctx.subagents.start(参.名, 参.请求)
+          }
+          if (run) { log('子代理派活走的是：' + 模式); break }
+        } catch (e) {
+          最后错 = String(e?.message ?? e)
+          log('子代理派活「' + 模式 + '」不行：' + 最后错)
+        }
+      }
+      if (!run) {
+        // 所有形状都不行 → 兜底新建会话，别让整个 bili_scan 挂掉
+        log('子代理接口都试过了（' + (试们.join(' / ') || '一个都没有') + '），改用兜底：新建会话派活' + (最后错 ? '（最后一句错：' + 最后错 + '）' : ''))
         const 兜3 = await 兜底派活(prompt, 子provider, 子model)
         if (!兜3.ok) {
           扫描中 = Math.max(0, 扫描中 - 1)
