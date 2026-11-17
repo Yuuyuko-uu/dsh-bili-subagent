@@ -847,8 +847,8 @@ export function apply(ctx, config) {
       ? '· 顺手点个赞、收藏一下（`bili_triple`，mode 用 like_fav）。'
       : ''
     return [
-      '这条是' + owner + '私信转给你的。看完**私信回**她 —— 用 `bili_send_message`；**不要**发评论、**不要** @，也别去评论区（那是另一条路，别混）。',
-      '· 话不用长：讲了什么、值不值得看、你自己怎么看，三句就够。**不用带 BV 号** —— 她转给你的，她知道是哪条。',
+      '这条是' + owner + '私信转给你的。看完**私信回**对方 —— 用 `bili_send_message`；**不要**发评论、**不要** @，也别去评论区（那是另一条路，别混）。',
+      '· 话不用长：讲了什么、值不值得看、你自己怎么看，三句就够。**不用带 BV 号** —— 对方转给你的，对方知道是哪条。',
       三连,
       '· 上面这段说明别念出来，用你自己的话说。',
     ].filter((x) => x !== '').join(String.fromCharCode(10))
@@ -1237,7 +1237,7 @@ export function apply(ctx, config) {
     name: 'bili_scan',
     description: '派一个子代理去刷 B 站：按你想看的方向搜视频、读字幕原文、把值得的挑出来，看完把内容汇报给你。\n'
       + '大肥鱼（或你）说「帮我刷下 XX 方向」就能触发；子代理模型可在设置页选。'
-      + '如果只想看**某一条**（比如她 @ 你的、或私信转给你的），传 bvid —— 那就只读那一条，不搜不挑。',
+      + '如果只想看**某一条**（比如使用者 @ 你的、或私信转给你的），传 bvid —— 那就只读那一条，不搜不挑。',
     parameters: {
       direction: { type: 'string', description: '想刷什么方向 / 主题 / 关键词，一句话或几个词' },
       bvid: { type: 'string', description: '可选。给了 BV号就是「定点看这一条」（@ 我的、或私信转给我的那条）：只看它、不搜不挑' },
@@ -2041,8 +2041,8 @@ export function apply(ctx, config) {
         ? '〔' + ownerName + ' 私信转给你 ' + 私信们.length + ' 条视频 —— 看完**私信回**〕'
         : '〔' + ownerName + ' 在 B站 私信里跟你说话 —— **私信回**〕')
         + String.fromCharCode(10) + 私信们.map(行).join(String.fromCharCode(10))
-        + String.fromCharCode(10) + '  ↳ 回法：用 `bili_send_message` 私信回她，**不发评论、不 @**；'
-        + '话里**不用带 BV 号**（她转给你的，她知道是哪条）。')
+        + String.fromCharCode(10) + '  ↳ 回法：用 `bili_send_message` 私信回对方，**不发评论、不 @**；'
+        + '话里**不用带 BV 号**（对方转给你的，对方知道是哪条）。')
     }
     if (我的.length) {
       段.push('〔' + ownerName + ' 在评论区找你了 —— 在**评论区**回〕'
@@ -2162,9 +2162,9 @@ export function apply(ctx, config) {
         const 例外 = 全私信
           ? (有视频
             ? '⚠️ 这一轮只有' + ownerN + '私信转来的一条视频：**只看那一条**（`bili_scan` 传 bvid），别刷整轮；'
-              + '看完**私信回她**，不要发评论、不要 @、也不要去评论区。' + String.fromCharCode(10) + String.fromCharCode(10)
+              + '看完**私信回对方**，不要发评论、不要 @、也不要去评论区。' + String.fromCharCode(10) + String.fromCharCode(10)
             : '⚠️ 这一轮只是' + ownerN + '在 **B站 私信**里跟你说了一句话（没带视频）：'
-              + '**不用刷、不用看视频、也不用去评论区**；看完**用 `bili_send_message` 私信回**她，'
+              + '**不用刷、不用看视频、也不用去评论区**；看完**用 `bili_send_message` 私信回**对方，'
               + '话里不用带 BV 号。' + String.fromCharCode(10) + String.fromCharCode(10))
           : ''
         // ⭐ 有 @ / 回复就一起递过去：一条消息里说完，别连着弹两下
@@ -2807,7 +2807,7 @@ export function apply(ctx, config) {
         log('收件箱（手动）：' + box.length + ' 条，投递' + (sent ? '成功' : '失败'))
         return sendJson(res, 200, {
           ok: true, count: box.length, sent,
-          hint: sent ? '已经递到会话里了 —— 切过去看她怎么回' : '拉到了，但没投递成功（会话没醒着？）',
+          hint: sent ? '已经递到会话里了 —— 切过去看使用者怎么回' : '拉到了，但没投递成功（会话没醒着？）',
           preview: text,
         })
       } catch (e) {
