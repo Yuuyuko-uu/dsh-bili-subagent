@@ -75,6 +75,9 @@ window.__ModuleLoader__.load({
 [data-bd-num]{width:88px;text-align:center;}
 /* ⭐ 下拉框别去吃 width:100% —— 否则同一行里「说明文字」那一栏被挤成一条竖线（2026-10-22 主人指出） */
 select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
+/* ⭐ 同一个坑又来一次（2026-11-18）：时间输入框也吃 width:100%，
+   于是「静默时段」和「到点发动态」那几行的说明文字被压成一列竖字。时间框一律收窄。 */
+input[type="time"][data-bd-input],input[type="date"][data-bd-input],input[type="datetime-local"][data-bd-input]{width:auto;min-width:120px;max-width:160px;flex:0 0 auto;}
 [data-bd-btn]{padding:7px 12px;border-radius:8px;font-size:12px;cursor:pointer;font-family:inherit;
   border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));
   background:var(--dsw-alias-bg-overlay,rgba(128,128,128,.14));color:inherit;}
@@ -158,6 +161,8 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
       const [dynamicPerDay, setDynamicPerDay] = React.useState(null)   // 每天最多发几条动态
       const [dynamicGapMin, setDynamicGapMin] = React.useState(null)   // 两条动态隔几分钟
       const [dynamicTime, setDynamicTime] = React.useState(null)       // 到点发动态的时间（本地草稿）
+      const [quietFrom, setQuietFrom] = React.useState(null)           // 静默时段·从（本地草稿）
+      const [quietTo, setQuietTo] = React.useState(null)               // 静默时段·到
       const [dynamicSession, setDynamicSession] = React.useState(null) // 到点发的会话（本地草稿）
       const [subProvider, setSubProvider] = React.useState(null)   // 派子代理用的 provider
       const [subModel, setSubModel] = React.useState(null)         // 派子代理用的 model
@@ -228,6 +233,8 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
         if (cfg && dynamicPerDay === null) setDynamicPerDay(String(cfg.dynamicPerDay ?? 3))
         if (cfg && dynamicGapMin === null) setDynamicGapMin(String(cfg.dynamicGapMin ?? 10))
         if (cfg && dynamicTime === null) setDynamicTime(cfg.dynamicTime || '22:00')
+        if (cfg && quietFrom === null) setQuietFrom(cfg.quietFrom || '23:00')
+        if (cfg && quietTo === null) setQuietTo(cfg.quietTo || '12:00')
         if (cfg && dynamicSession === null) setDynamicSession(cfg.dynamicSession || '')
       }, [cfg])
       React.useEffect(() => { jget('/update').then((r) => setUp(r)).catch(() => {}) }, [])
@@ -564,6 +571,40 @@ select[data-bd-input]{width:auto;min-width:150px;max-width:230px;flex:0 0 auto;}
                   on: sw(k),
                   onChange: (v) => patch({ [k]: v }, win[k].label),
                 }))) : null,
+              /* ⭐ 0.10.0：静默时段。
+                 谷时窗口那两个时间是**官方定价区间**，不给改（改了「谷时」就不成立了）；
+                 这里管的是「谷时里我也不想让它跑的那一段」，只会把能跑的时段再缩小。 */
+              模式 !== 'manual' ? h('div', { 'data-bd-sub': '' },
+                h(ToggleRow, {
+                  label: '静默时段',
+                  note: cfg.quietOn ? '' : '这段时间里一轮都不跑，额度也不扣',
+                  on: Boolean(cfg.quietOn),
+                  onChange: (v) => patch({ quietOn: v }, '静默时段'),
+                }),
+                cfg.quietOn ? h('div', { 'data-bd-row': '' },
+                  h('div', { 'data-bd-grow': '' },
+                    h('div', { 'data-bd-label': '' }, '从'),
+                    h('div', { 'data-bd-note': '' }, '北京时间；跨零点直接写，比如 23:00 到 12:00')),
+                  h('input', {
+                    'data-bd-input': '', type: 'time', value: quietFrom ?? '',
+                    onChange: (e) => setQuietFrom(e.target.value),
+                    onBlur: () => { const v = String(quietFrom || '').trim(); setQuietFrom(v); patch({ quietFrom: v || '23:00' }, '静默开始') },
+                  })) : null,
+                cfg.quietOn ? h('div', { 'data-bd-row': '' },
+                  h('div', { 'data-bd-grow': '' },
+                    h('div', { 'data-bd-label': '' }, '到'),
+                    h('div', { 'data-bd-note': '' }, '到点之后自动恢复；起止写一样 = 不静默')),
+                  h('input', {
+                    'data-bd-input': '', type: 'time', value: quietTo ?? '',
+                    onChange: (e) => setQuietTo(e.target.value),
+                    onBlur: () => { const v = String(quietTo || '').trim(); setQuietTo(v); patch({ quietTo: v || '12:00' }, '静默结束') },
+                  })) : null,
+                cfg.quietOn ? h(ToggleRow, {
+                  label: '这段时间连私信也一起停',
+                  note: '关掉的话，静默只挡自动刷，有人 @ 你 照样马上递过来',
+                  on: cfg.quietMuteWatch !== false,
+                  onChange: (v) => patch({ quietMuteWatch: v }, '私信是否一起静默'),
+                }) : null) : null,
               模式 !== 'manual' ? h('div', { 'data-bd-row': '' },
                 h('div', { 'data-bd-grow': '' },
                   h('div', { 'data-bd-label': '' }, '两轮之间至少隔几分钟'),

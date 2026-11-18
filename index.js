@@ -227,7 +227,35 @@ export const Config = !z ? undefined : z.object({
   dynamicSession: z.string().default('').extra('volatile', true),
   /** ⭐ 派过去的那句话（占位符 {owner} {home}） */
   dynamicPrompt: z.string().default(DYNAMIC_TMPL).extra('volatile', true),
+  /** ⭐ 静默时段（默认关）：谷时里也不想让它跑的那一段，可以跨零点 */
+  quietOn: z.boolean().default(false).extra('volatile', true),
+  /** 静默从几点开始 HH:mm */
+  quietFrom: z.string().default('23:00').extra('volatile', true),
+  /** 静默到几点结束 HH:mm */
+  quietTo: z.string().default('12:00').extra('volatile', true),
+  /** 静默时段里「随叫随到」也一起停（默认开） */
+  quietMuteWatch: z.boolean().default(true).extra('volatile', true),
 })
+
+/**
+ * ⭐ 0.10.0：静默时段判定（纯函数，单测直接打它）。
+ *   设 = { on, from: 'HH:MM', to: 'HH:MM' }；起 > 止 表示跨零点。
+ *   ⚠ 起止写一样、格式不对、或者没开，都当「不静默」—— 不要因为一个人填错，
+ *     就把一整天都变成静默（那是比不静默更糟的故障）。
+ */
+export function 在静默时段(now, 设 = {}) {
+  if (!设 || !设.on) return false
+  const 到分 = (t) => {
+    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(t || '').trim())
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null
+  }
+  const 起 = 到分(设.from)
+  const 止 = 到分(设.to)
+  if (起 === null || 止 === null || 起 === 止) return false
+  const 现在 = now.getHours() * 60 + now.getMinutes()
+  return 起 < 止 ? (现在 >= 起 && 现在 < 止) : (现在 >= 起 || 现在 < 止)
+}
+
 
 /**
  * ⭐ 给所有 Python 子进程统一 UTF-8。
@@ -439,6 +467,12 @@ export function apply(ctx, config) {
     dynamicTime: '22:00',
     dynamicSession: '',   // 留空 = 跟 targetSession 同一个
     dynamicPrompt: DYNAMIC_TMPL,
+    // ⭐ 0.10.0：**静默时段** —— 谷时里也不想让它跑的那一段（可以跨零点，23:00 → 12:00）。
+    //    跟谷时窗口是两回事：那是官方定价区间，不能改；这个只会把能跑的时段再缩小。
+    quietOn: false,
+    quietFrom: '23:00',
+    quietTo: '12:00',
+    quietMuteWatch: true,   // 「随叫随到」在静默时段里也一起停（有人 @ 你，等醒了再说）
   }
   const normalize = (src, base) => {
     const out = { ...base }
@@ -496,6 +530,14 @@ export function apply(ctx, config) {
     if ('dynamicPrompt' in p) p.dynamicPrompt = String(p.dynamicPrompt || '').slice(0, 4000)
     if ('watchInterval' in p) p.watchInterval = Math.max(60, Math.min(Number(p.watchInterval) || 120, 1800))
     if ('watchScope' in p) p.watchScope = ['valley', 'always'].includes(String(p.watchScope)) ? String(p.watchScope) : 'valley'
+    // ⭐ 0.10.0：静默时段。时间是 HH:MM，写坏了就退回默认值，别把整段静默变成"从 00:00 到 00:00"
+    if ('quietOn' in p) p.quietOn = Boolean(p.quietOn)
+    if ('quietMuteWatch' in p) p.quietMuteWatch = Boolean(p.quietMuteWatch)
+    for (const [k, 底] of [['quietFrom', '23:00'], ['quietTo', '12:00']]) {
+      if (!(k in p)) continue
+      const t = String(p[k] || '').trim()
+      p[k] = /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : 底
+    }
     // ⭐ 0.9.1：schema 里是 string 的字段，先统一成字符串再交给宿主 ——
     //   直接 POST 数字（比如 inboxUids: 22761155）会被 DSH 的 schema 整批拒掉，
     //   同一批里合法的 8 个字段也跟着白写（2026-10-31 有人就这么中过一次）。
@@ -1599,7 +1641,9 @@ export function apply(ctx, config) {
       + '看 @ 和回复：`{"inboxOn":true,"inboxOnceOnly":true,"inboxMaxRemind":2}`；'
       + '有人找我就马上告诉你：`{"watchOn":true,"watchDm":true,"watchAt":true,"watchInterval":120,"watchScope":"valley"}`'
       + '（watchScope = valley 只在谷时 / always 全天；watchInterval 60–1800 秒）；'
-      + '允许发公开动态：`{"dynamicOn":true}`（默认关）；额度：`{"dynamicPerDay":3,"dynamicGapMin":10}`（每天几条 1–10 / 隔几分钟 1–720）。',
+      + '允许发公开动态：`{"dynamicOn":true}`（默认关）；额度：`{"dynamicPerDay":3,"dynamicGapMin":10}`（每天几条 1–10 / 隔几分钟 1–720）；'
+      + '静默时段：`{"quietOn":true,"quietFrom":"23:00","quietTo":"12:00","quietMuteWatch":true}`'
+      + '（这段时间里一轮都不跑、额度也不扣；可以跨零点；quietMuteWatch = 连「有人找我就马上告诉你」也一起停）。',
     parameters: { patch: { type: 'object', additionalProperties: true, description: '要改的字段（可省）' } },
     async execute(args) {
       let host = null
@@ -2192,6 +2236,22 @@ export function apply(ctx, config) {
     return cfg.peakValley ? 'valley' : 'manual'
   }
 
+
+  /**
+   * ⭐ 0.10.0（2026-11-18）：**静默时段**。
+   *
+   * 用户的原话：想在 23:00 到第二天 12:00 之间一句都别刷 —— 那段时间推给它的推荐没人看，
+   * 可轮次照样被用掉，第二天醒来额度已经空了。
+   *
+   * ⚠ 它跟「谷时窗口」不是一回事，别混：
+   *   谷时是**官方定价区间**（工作日 9–12、14–18 之外全是谷时），那是价格，不是我们的喜好，
+   *   所以那两个窗口的时间**不给改**；而静默是「谷时里我也不想让它跑的那一段」，
+   *   只会把能跑的时段**再缩小**，绝不会把高峰说成谷时。
+   *
+   * ⚠ 必须支持跨零点：23:00 → 12:00 这种写法最常见。
+   */
+  const 在静默里 = (now) => 在静默时段(now, { on: cfg.quietOn, from: cfg.quietFrom, to: cfg.quietTo })
+
   // ⭐ 谷时定时器：每 60 秒看一次，满足四件事才跑
   //    ① 自动刷不是「只手动」 ② 今天自动刷的轮数没到上限 ③ 现在落在某个谷时窗口里（全天模式不看这条）
   //    ④ 离上一轮已经隔够「两轮之间至少隔几分钟」
@@ -2207,6 +2267,8 @@ export function apply(ctx, config) {
       const 模式 = 自动模式()
       if (模式 === 'manual') return
       const now = new Date()
+      // ⭐ 静默时段：这一段里一律不跑，**也不吃轮次**（额度一点不扣）
+      if (在静默里(now)) return
       const st = readJson(dutyStateFile, {})
       // ⭐ 0.9.1：上一轮**没投出去**（目标会话没醒着之类）时给个冷却 ——
       //   以前失败会把 lastRunAt 退回去，于是下一分钟又撞一次，日志一分钟一条刷十几分钟。
@@ -2368,6 +2430,9 @@ export function apply(ctx, config) {
     if (!要私信 && !要提醒) return
     const now = new Date()
     if (String(cfg.watchScope || 'valley') === 'valley' && !现在是谷时(now)) return
+    // ⭐ 0.10.0：静默时段里也闭嘴 —— 半夜被「有人 @ 你」叫醒，跟半夜被推荐吵是同一件事。
+    //   有人不想连这个也停，就关掉 quietMuteWatch，让它只管自动刷。
+    if (cfg.quietMuteWatch !== false && 在静默里(now)) return
 
     // ① 先问一句最小的：未读数（B站 一个请求给全：@ at / 收到的回复 recv_reply）
     //   ⚠ 0.9.4：**汇总里的 chat 不能当门槛** —— 有的号那个数永远是 0（用户实测），
